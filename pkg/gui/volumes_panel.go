@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/fatih/color"
@@ -85,23 +86,23 @@ func (gui *Gui) volumeConfigStr(volume *commands.Volume) string {
 	return output
 }
 
-func (gui *Gui) reloadVolumes() error {
-	if err := gui.refreshStateVolumes(); err != nil {
-		return err
-	}
-
-	return gui.Panels.Volumes.RerenderList()
-}
-
-func (gui *Gui) refreshStateVolumes() error {
-	volumes, err := gui.DockerCommand.RefreshVolumes()
+// reconcileVolumes is the reconciliation job for the volumes unit: one
+// docker fetch followed by an atomic list replacement + repaint.
+func (gui *Gui) reconcileVolumes(apply func(func() error) error) error {
+	volumes, err := gui.DockerCommand.RefreshVolumes(gui.Panels.Volumes.List.GetAllItems())
 	if err != nil {
 		return err
 	}
 
-	gui.Panels.Volumes.SetItems(volumes)
+	return apply(func() error {
+		gui.Panels.Volumes.SetItems(volumes)
+		return gui.Panels.Volumes.RenderList()
+	})
+}
 
-	return nil
+// reloadVolumes synchronously reconciles the volumes unit.
+func (gui *Gui) reloadVolumes() error {
+	return gui.reconcile.RequestSync(context.Background(), reconcileVolumes)
 }
 
 func (gui *Gui) handleVolumesRemoveMenu(g *gocui.Gui, v *gocui.View) error {

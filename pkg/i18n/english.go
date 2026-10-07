@@ -136,6 +136,12 @@ type TranslationSet struct {
 	FocusImages     string
 	FocusVolumes    string
 	FocusNetworks   string
+
+	// Per-panel reconciliation status, shown in panel subtitles.
+	ReconcileReconciling string
+	ReconcilePending     string
+	ReconcileSynced      string
+	ReconcileLoading     string
 }
 
 func englishSet() TranslationSet {
@@ -279,5 +285,10 @@ func englishSet() TranslationSet {
 		FocusImages:     "focus images panel",
 		FocusVolumes:    "focus volumes panel",
 		FocusNetworks:   "focus networks panel",
+
+		ReconcileReconciling: "updating",
+		ReconcilePending:     "pending",
+		ReconcileSynced:      "synced",
+		ReconcileLoading:     "loading",
 	}
 }

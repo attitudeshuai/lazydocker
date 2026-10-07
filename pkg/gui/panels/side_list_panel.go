@@ -195,9 +195,21 @@ func (self *SideListPanel[T]) Refocus() {
 	self.Gui.FocusY(self.SelectedIdx, self.List.Len(), self.View)
 }
 
+// SetItems replaces the panel's items. When the previously selected item is
+// still present in the new slice (item identity is equality on T, which for
+// pointer types means object reuse), the selection follows it instead of
+// sticking to the same index, so refreshes don't move the cursor.
 func (self *SideListPanel[T]) SetItems(items []T) {
+	selectedItem, hadSelection := self.List.TryGet(self.SelectedIdx)
+
 	self.List.SetItems(items)
 	self.FilterAndSort()
+
+	if hadSelection {
+		if newIndex := self.List.GetIndex(selectedItem); newIndex >= 0 {
+			self.SelectedIdx = newIndex
+		}
+	}
 }
 
 func (self *SideListPanel[T]) FilterAndSort() {
@@ -234,28 +246,36 @@ func (self *SideListPanel[T]) RerenderList() error {
 	self.FilterAndSort()
 
 	self.Gui.Update(func() error {
-		self.View.Clear()
-		table := lo.Map(self.List.GetItems(), func(item T, index int) []string {
-			return self.GetTableCells(item)
-		})
-		renderedTable, err := utils.RenderTable(table)
-		if err != nil {
-			return err
-		}
-		fmt.Fprint(self.View, renderedTable)
-
-		if self.OnRerender != nil {
-			if err := self.OnRerender(); err != nil {
-				return err
-			}
-		}
-
-		if self.Gui.IsCurrentView(self.View) {
-			return self.HandleSelect()
-		}
-		return nil
+		return self.RenderList()
 	})
 
+	return nil
+}
+
+// RenderList repaints the list into its view. Unlike RerenderList it does not
+// schedule its own gui update, so it can be composed with other panel
+// repaints inside a single atomic update: the screen then always shows a
+// snapshot from one complete fetch rather than a mix of old and new data.
+func (self *SideListPanel[T]) RenderList() error {
+	self.View.Clear()
+	table := lo.Map(self.List.GetItems(), func(item T, index int) []string {
+		return self.GetTableCells(item)
+	})
+	renderedTable, err := utils.RenderTable(table)
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(self.View, renderedTable)
+
+	if self.OnRerender != nil {
+		if err := self.OnRerender(); err != nil {
+			return err
+		}
+	}
+
+	if self.Gui.IsCurrentView(self.View) {
+		return self.HandleSelect()
+	}
 	return nil
 }
 

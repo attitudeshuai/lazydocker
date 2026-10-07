@@ -19,8 +19,10 @@ type Volume struct {
 	DockerCommand LimitedDockerCommand
 }
 
-// RefreshVolumes gets the volumes and stores them
-func (c *DockerCommand) RefreshVolumes() ([]*Volume, error) {
+// RefreshVolumes gets the volumes and stores them. Volumes that were already
+// present in existingVolumes are reused (same pointer, refreshed details) so
+// that panels can keep selection and avoid rebuilding the whole list.
+func (c *DockerCommand) RefreshVolumes(existingVolumes []*Volume) ([]*Volume, error) {
 	result, err := c.Client.VolumeList(context.Background(), volume.ListOptions{})
 	if err != nil {
 		return nil, err
@@ -28,9 +30,20 @@ func (c *DockerCommand) RefreshVolumes() ([]*Volume, error) {
 
 	volumes := result.Volumes
 
+	existingByName := make(map[string]*Volume, len(existingVolumes))
+	for _, vol := range existingVolumes {
+		existingByName[vol.Name] = vol
+	}
+
 	ownVolumes := make([]*Volume, len(volumes))
 
 	for i, vol := range volumes {
+		if existingVolume, ok := existingByName[vol.Name]; ok {
+			existingVolume.Volume = vol
+			ownVolumes[i] = existingVolume
+			continue
+		}
+
 		ownVolumes[i] = &Volume{
 			Name:          vol.Name,
 			Volume:        vol,

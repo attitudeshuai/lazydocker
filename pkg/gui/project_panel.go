@@ -64,42 +64,65 @@ func (gui *Gui) getProjectPanel() *panels.SideListPanel[*commands.Project] {
 	}
 }
 
-func (gui *Gui) refreshProject() error {
+// reconcileProject is the reconciliation job for the projects unit. It runs
+// after the containers unit has applied fresh data (projects are derived
+// from container labels). Existing project objects are reused so selection
+// survives refreshes.
+func (gui *Gui) reconcileProject(apply func(func() error) error) error {
 	projects := gui.getDiscoveredProjects()
 
-	// Preserve the current selection across refreshes. On the first refresh,
-	// select the project specified via -p flag, or fall back to the local project.
-	selectedName := gui.getSelectedProjectName()
-	if selectedName == "" {
+	// On the first refresh, select the project specified via -p flag, or
+	// fall back to the local project. Afterwards SetItems keeps following
+	// the currently selected project object.
+	hadSelection := false
+	if _, err := gui.Panels.Projects.GetSelectedItem(); err == nil {
+		hadSelection = true
+	}
+	initialSelectedName := ""
+	if !hadSelection {
 		if gui.Config.ProjectName != "" {
-			selectedName = gui.Config.ProjectName
+			initialSelectedName = gui.Config.ProjectName
 		} else {
-			selectedName = gui.DockerCommand.LocalProjectName
+			initialSelectedName = gui.DockerCommand.LocalProjectName
 		}
 	}
 
-	gui.Panels.Projects.SetItems(projects)
+	return apply(func() error {
+		gui.Panels.Projects.SetItems(projects)
 
-	if selectedName != "" {
-		for i, p := range gui.Panels.Projects.List.GetItems() {
-			if p.Name == selectedName {
-				gui.Panels.Projects.SetSelectedLineIdx(i)
-				gui.Panels.Projects.Refocus()
-				break
+		if initialSelectedName != "" {
+			for i, p := range gui.Panels.Projects.List.GetItems() {
+				if p.Name == initialSelectedName {
+					gui.Panels.Projects.SetSelectedLineIdx(i)
+					gui.Panels.Projects.Refocus()
+					break
+				}
 			}
 		}
-	}
 
-	return gui.Panels.Projects.RerenderList()
+		return gui.Panels.Projects.RenderList()
+	})
+}
+
+// refreshProject synchronously reconciles the projects unit.
+func (gui *Gui) refreshProject() error {
+	return gui.reconcile.RequestSync(context.Background(), reconcileProjects)
 }
 
 // getDiscoveredProjects returns all docker compose projects by examining container labels.
 // The local project (from docker-compose.yml in the current directory, or from -p) is
 // included even when it has no running containers, so the user always sees the project
-// they explicitly scoped to.
+// they explicitly scoped to. Projects that were already displayed are reused (same
+// pointer) so the panel selection can follow them.
 func (gui *Gui) getDiscoveredProjects() []*commands.Project {
 	containers := gui.Panels.Containers.List.GetAllItems()
+	existingProjects := gui.Panels.Projects.List.GetAllItems()
 	projectNames := gui.DockerCommand.GetProjectNames(containers)
+
+	existingByName := make(map[string]*commands.Project, len(existingProjects))
+	for _, project := range existingProjects {
+		existingByName[project.Name] = project
+	}
 
 	// If we're scoped to a project but it has no running containers, still
 	// include it. We don't fall back to the directory name here to avoid
@@ -121,6 +144,10 @@ func (gui *Gui) getDiscoveredProjects() []*commands.Project {
 
 	projects := make([]*commands.Project, len(projectNames))
 	for i, name := range projectNames {
+		if existingProject, ok := existingByName[name]; ok {
+			projects[i] = existingProject
+			continue
+		}
 		projects[i] = &commands.Project{Name: name}
 	}
 

@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -92,23 +93,24 @@ func (gui *Gui) imageConfigStr(image *commands.Image) string {
 	return output
 }
 
-func (gui *Gui) reloadImages() error {
-	if err := gui.refreshStateImages(); err != nil {
-		return err
-	}
-
-	return gui.Panels.Images.RerenderList()
-}
-
-func (gui *Gui) refreshStateImages() error {
-	images, err := gui.DockerCommand.RefreshImages()
+// reconcileImages is the reconciliation job for the images unit: one docker
+// fetch followed by an atomic list replacement + repaint.
+func (gui *Gui) reconcileImages(apply func(func() error) error) error {
+	images, err := gui.DockerCommand.RefreshImages(gui.Panels.Images.List.GetAllItems())
 	if err != nil {
 		return err
 	}
 
-	gui.Panels.Images.SetItems(images)
+	return apply(func() error {
+		gui.Panels.Images.SetItems(images)
+		return gui.Panels.Images.RenderList()
+	})
+}
 
-	return nil
+// reloadImages synchronously reconciles the images unit. Used by actions
+// that want the refresh to finish before continuing.
+func (gui *Gui) reloadImages() error {
+	return gui.reconcile.RequestSync(context.Background(), reconcileImages)
 }
 
 func (gui *Gui) FilterString(view *gocui.View) string {

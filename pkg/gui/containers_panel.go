@@ -265,40 +265,46 @@ func (gui *Gui) renderContainerTop(container *commands.Container) tasks.TaskFunc
 	})
 }
 
-func (gui *Gui) refreshContainersAndServices() error {
+// reconcileContainersAndServices is the reconciliation job for the
+// containers+services unit: one docker fetch, then a single atomic view
+// mutation (so the screen always shows containers and services from the same
+// complete fetch). It runs serialized with every other fetch of this unit.
+func (gui *Gui) reconcileContainersAndServices(apply func(func() error) error) error {
 	if gui.Views.Containers == nil {
 		// if the containersView hasn't been instantiated yet we just return
 		return nil
 	}
 
-	// keep track of current service selected so that we can reposition our cursor if it moves position in the list
-	originalSelectedLineIdx := gui.Panels.Services.SelectedIdx
-	selectedService, isServiceSelected := gui.Panels.Services.List.TryGet(originalSelectedLineIdx)
+	// Snapshot the currently displayed objects before fetching so the docker
+	// layer can reuse them (same *Container/*Service pointers are kept).
+	existingContainers := gui.Panels.Containers.List.GetAllItems()
+	existingServices := gui.Panels.Services.List.GetAllItems()
 
 	containers, services, err := gui.DockerCommand.RefreshContainersAndServices(
-		gui.Panels.Containers.List.GetAllItems(),
+		existingContainers,
+		existingServices,
 	)
 	if err != nil {
 		return err
 	}
 
-	gui.Panels.Services.SetItems(services)
-	gui.Panels.Containers.SetItems(containers)
+	return apply(func() error {
+		// SetItems keeps the selection on items that are still present;
+		// pointers are stable because the docker layer reused them.
+		gui.Panels.Services.SetItems(services)
+		gui.Panels.Containers.SetItems(containers)
 
-	// see if our selected service has moved
-	if isServiceSelected {
-		for i, service := range gui.Panels.Services.List.GetItems() {
-			if service.ID == selectedService.ID {
-				if i == originalSelectedLineIdx {
-					break
-				}
-				gui.Panels.Services.SetSelectedLineIdx(i)
-				gui.Panels.Services.Refocus()
-			}
-		}
-	}
+		// repaint both panels together so neither panel shows a half-fetch
+		return gui.renderContainersAndServicesInPlace()
+	})
+}
 
-	return gui.renderContainersAndServices()
+// refreshContainersAndServices synchronously reconciles the
+// containers+services unit. Used by actions that need the refresh to
+// complete before continuing; event-driven refreshes go through the
+// reconcile manager directly.
+func (gui *Gui) refreshContainersAndServices() error {
+	return gui.reconcile.RequestSync(context.Background(), reconcileContainers)
 }
 
 func (gui *Gui) renderContainersAndServices() error {
@@ -307,6 +313,21 @@ func (gui *Gui) renderContainersAndServices() error {
 	}
 
 	if err := gui.Panels.Containers.RerenderList(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// renderContainersAndServicesInPlace repaints both panels without scheduling
+// its own gui update, so it can be part of an atomic apply alongside
+// SetItems.
+func (gui *Gui) renderContainersAndServicesInPlace() error {
+	if err := gui.Panels.Services.RenderList(); err != nil {
+		return err
+	}
+
+	if err := gui.Panels.Containers.RenderList(); err != nil {
 		return err
 	}
 

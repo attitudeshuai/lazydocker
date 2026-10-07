@@ -19,16 +19,31 @@ type Network struct {
 	DockerCommand LimitedDockerCommand
 }
 
-// RefreshNetworks gets the networks and stores them
-func (c *DockerCommand) RefreshNetworks() ([]*Network, error) {
+// RefreshNetworks gets the networks and stores them. Networks that were
+// already present in existingNetworks are reused (same pointer, refreshed
+// details) so that panels can keep selection and avoid rebuilding the whole
+// list.
+func (c *DockerCommand) RefreshNetworks(existingNetworks []*Network) ([]*Network, error) {
 	networks, err := c.Client.NetworkList(context.Background(), network.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
+	existingByID := make(map[string]*Network, len(existingNetworks))
+	for _, nw := range existingNetworks {
+		existingByID[nw.Network.ID] = nw
+	}
+
 	ownNetworks := make([]*Network, len(networks))
 
 	for i, nw := range networks {
+		if existingNetwork, ok := existingByID[nw.ID]; ok {
+			existingNetwork.Network = nw
+			existingNetwork.Name = nw.Name
+			ownNetworks[i] = existingNetwork
+			continue
+		}
+
 		ownNetworks[i] = &Network{
 			Name:          nw.Name,
 			Network:       nw,

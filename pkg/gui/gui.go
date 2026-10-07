@@ -4,13 +4,13 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/events"
 
 	"github.com/go-errors/errors"
 
-	throttle "github.com/boz/go-throttle"
 	"github.com/jesseduffield/gocui"
 	lcUtils "github.com/jesseduffield/lazycore/pkg/utils"
 	"github.com/jesseduffield/lazydocker/pkg/commands"
@@ -34,8 +34,15 @@ type Gui struct {
 	Tr            *i18n.TranslationSet
 	statusManager *statusManager
 	taskManager   *tasks.TaskManager
-	ErrorChan     chan error
-	Views         Views
+	// reconcile serializes panel fetches, routes docker events only to the
+	// panels they affect and tracks per-panel freshness
+	reconcile *reconcileManager
+	// eventStreamConnected records whether the docker event subscription is
+	// currently believed to be healthy. While false, a timer falls back to
+	// full refreshes.
+	eventStreamConnected atomic.Bool
+	ErrorChan            chan error
+	Views                Views
 
 	// if we've suspended the gui (e.g. because we've switched to a subprocess)
 	// we typically want to pause some things that are running like background
@@ -211,9 +218,6 @@ func (gui *Gui) Run() error {
 		return err
 	}
 
-	throttledRefresh := throttle.ThrottleFunc(time.Millisecond*50, true, gui.refresh)
-	defer throttledRefresh.Stop()
-
 	go func() {
 		for err := range gui.ErrorChan {
 			if err == nil {
@@ -240,6 +244,9 @@ func (gui *Gui) Run() error {
 	// TODO: see if we can avoid the circular dependency
 	gui.setPanels()
 
+	gui.initReconciler()
+	defer gui.reconcile.stop()
+
 	if err = gui.keybindings(g); err != nil {
 		return err
 	}
@@ -259,13 +266,18 @@ func (gui *Gui) Run() error {
 	ctx, finish := context.WithCancel(context.Background())
 	defer finish()
 
-	go gui.listenForEvents(ctx, throttledRefresh.Trigger)
+	go gui.listenForEvents(ctx)
 	go gui.monitorContainerStats(ctx)
+	go gui.fallbackFullRefreshLoop(ctx)
 
 	go func() {
-		throttledRefresh.Trigger()
+		// initial load: reconcile every panel once
+		gui.reconcile.RequestAll()
 
 		gui.goEvery(time.Millisecond*30, gui.reRenderMain)
+		// keep the per-panel reconciliation subtitles fresh (spinner and
+		// last-success timestamps)
+		gui.goEvery(time.Millisecond*250, gui.renderReconcileStatuses)
 		gui.goEvery(time.Millisecond*1000, gui.updateContainerDetails)
 		gui.goEvery(time.Millisecond*1000, gui.checkForContextChange)
 		// we need to regularly re-render these because their stats will be changed in the background
@@ -295,35 +307,93 @@ func (gui *Gui) updateContainerDetails() error {
 	return gui.DockerCommand.RefreshContainerDetails(gui.Panels.Containers.List.GetAllItems())
 }
 
-func (gui *Gui) refresh() {
-	go func() {
-		// Refresh containers/services first, then projects (which depend on
-		// container labels to discover projects).
-		if err := gui.refreshContainersAndServices(); err != nil {
-			gui.Log.Error(err)
+// initReconciler wires the docker fetch jobs to per-panel reconciliation
+// units. Fetches run on the main loop only through apply, so each view
+// mutation is an atomic snapshot of one complete fetch.
+func (gui *Gui) initReconciler() {
+	gui.reconcile = newReconcileManager(gui.Log, []reconcileUnitDef{
+		{
+			key:   reconcileContainers,
+			views: []*gocui.View{gui.Views.Containers, gui.Views.Services},
+			job:   gui.reconcileContainersAndServices,
+			// projects are derived from container labels, so they are only
+			// re-read after containers have applied fresh data
+			triggers: []reconcileKey{reconcileProjects},
+		},
+		{
+			key:   reconcileProjects,
+			views: []*gocui.View{gui.Views.Project},
+			job:   gui.reconcileProject,
+		},
+		{
+			key:   reconcileImages,
+			views: []*gocui.View{gui.Views.Images},
+			job:   gui.reconcileImages,
+		},
+		{
+			key:   reconcileVolumes,
+			views: []*gocui.View{gui.Views.Volumes},
+			job:   gui.reconcileVolumes,
+		},
+		{
+			key:   reconcileNetworks,
+			views: []*gocui.View{gui.Views.Networks},
+			job:   gui.reconcileNetworks,
+		},
+	})
+	// apply runs the view mutation synchronously on the gocui main loop.
+	// Bailing out on ctx cancellation keeps shutdown from blocking on a
+	// mutation the main loop will no longer process.
+	gui.reconcile.apply = func(mutate func() error) error {
+		done := make(chan error, 1)
+		gui.g.Update(func(*gocui.Gui) error {
+			err := mutate()
+			select {
+			case done <- err:
+			default:
+			}
+			return err
+		})
+		select {
+		case err := <-done:
+			return err
+		case <-gui.reconcile.ctx.Done():
+			return gui.reconcile.ctx.Err()
 		}
-		if err := gui.refreshProject(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
-	go func() {
-		if err := gui.reloadVolumes(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
-	go func() {
-		if err := gui.reloadNetworks(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
-	go func() {
-		if err := gui.reloadImages(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
+	}
+	gui.reconcile.onStatusChange = func() { _ = gui.renderReconcileStatuses() }
+	gui.reconcile.start()
 }
 
-func (gui *Gui) listenForEvents(ctx context.Context, refresh func()) {
+// fallbackFullRefreshLoop keeps data moving while the docker event
+// subscription is unavailable: on a fixed timer it reconciles every panel,
+// which is equivalent to the old behaviour of refetching everything. When
+// the subscription is healthy it does nothing.
+func (gui *Gui) fallbackFullRefreshLoop(ctx context.Context) {
+	ticker := time.NewTicker(fallbackFullRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !gui.eventStreamConnected.Load() {
+				gui.reconcile.RequestAll()
+			}
+		}
+	}
+}
+
+func (gui *Gui) setEventStreamConnected(connected bool) {
+	gui.eventStreamConnected.Store(connected)
+}
+
+// listenForEvents subscribes to docker events, classifies each one and
+// routes it only to the affected reconciliation units. On stream errors all
+// panels are marked stale (events during the gap are missed) and a full
+// reconciliation runs once on recovery; the fallback timer covers the time
+// in between.
+func (gui *Gui) listenForEvents(ctx context.Context) {
 	errorCount := 0
 
 	onError := func(err error) {
@@ -353,9 +423,16 @@ outer:
 
 				// Assuming the confirmation prompt currently holds the given error
 				_ = gui.closeConfirmationPrompt()
-				refresh()
+				gui.setEventStreamConnected(true)
+				// Events emitted while the stream was down will never
+				// arrive, so every panel has to be re-accounted for once.
+				gui.reconcile.RequestAll()
 				errorCount = 0
 			}
+		} else {
+			// The stream was established; if it fails straight away the
+			// error branch below flips us back to disconnected.
+			gui.setEventStreamConnected(true)
 		}
 
 		for {
@@ -363,13 +440,26 @@ outer:
 			case <-ctx.Done():
 				return
 			case message := <-messageChan:
-				// We could be more granular about what events should trigger which refreshes.
-				// At the moment it's pretty efficient though, and it might not be worth
-				// the maintenance burden of mapping specific events to specific refreshes
-				refresh()
+				// Classify first, then route: only panels whose data this
+				// event can change are reconciled. Panels are marked stale
+				// before the per-panel throttle, so even an event the
+				// throttle coalesces away still forces a fetch.
+				affected := reconcileKeysForEvent(message)
+				for _, key := range affected {
+					gui.reconcile.Request(key)
+				}
 
-				gui.Log.Infof("received event of type: %s", message.Type)
+				if len(affected) == 0 {
+					gui.Log.Infof("received event of type: %s action: %s (no panels affected)", message.Type, message.Action)
+				} else {
+					gui.Log.Infof("received event of type: %s action: %s (routed to %v)", message.Type, message.Action, affected)
+				}
 			case err := <-errChan:
+				// The subscription is gone: anything could have changed in
+				// the gap, mark every panel stale. The fallback timer keeps
+				// retrying a full reconciliation while we're disconnected.
+				gui.setEventStreamConnected(false)
+				gui.reconcile.MarkAllStale()
 				onError(err)
 				continue outer
 			}

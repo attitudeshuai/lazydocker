@@ -90,11 +90,18 @@ func (i *Image) RenderHistory() (string, error) {
 	return utils.RenderTable(table)
 }
 
-// RefreshImages returns a slice of docker images
-func (c *DockerCommand) RefreshImages() ([]*Image, error) {
+// RefreshImages returns a slice of docker images. Images that were already
+// present in existingImages are reused (same pointer, refreshed summary) so
+// that panels can keep selection and avoid rebuilding the whole list.
+func (c *DockerCommand) RefreshImages(existingImages []*Image) ([]*Image, error) {
 	images, err := c.Client.ImageList(context.Background(), image.ListOptions{})
 	if err != nil {
 		return nil, err
+	}
+
+	existingByID := make(map[string]*Image, len(existingImages))
+	for _, img := range existingImages {
+		existingByID[img.ID] = img
 	}
 
 	ownImages := make([]*Image, len(images))
@@ -119,6 +126,15 @@ func (c *DockerCommand) RefreshImages() ([]*Image, error) {
 					break
 				}
 			}
+		}
+
+		// reuse the existing image object if we already knew about it
+		if existingImage, ok := existingByID[img.ID]; ok {
+			existingImage.Image = img
+			existingImage.Name = name
+			existingImage.Tag = tag
+			ownImages[i] = existingImage
+			continue
 		}
 
 		ownImages[i] = &Image{

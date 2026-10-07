@@ -223,7 +223,7 @@ func (c *DockerCommand) CreateClientStatMonitor(container *Container) {
 	container.MonitoringStats = false
 }
 
-func (c *DockerCommand) RefreshContainersAndServices(currentContainers []*Container) ([]*Container, []*Service, error) {
+func (c *DockerCommand) RefreshContainersAndServices(currentContainers []*Container, currentServices []*Service) ([]*Container, []*Service, error) {
 	c.ServiceMutex.Lock()
 	defer c.ServiceMutex.Unlock()
 
@@ -233,11 +233,11 @@ func (c *DockerCommand) RefreshContainersAndServices(currentContainers []*Contai
 	}
 
 	// Derive services from container labels (covers all projects)
-	services := c.GetServicesFromContainers(containers)
+	services := c.GetServicesFromContainers(containers, currentServices)
 
 	var composeServices []*Service
 	if c.InDockerComposeProject {
-		composeServices, err = c.GetServices()
+		composeServices, err = c.GetServices(currentServices)
 		if err != nil {
 			c.Log.Warn("Failed to get compose services: " + err.Error())
 		}
@@ -279,12 +279,18 @@ func (c *DockerCommand) RefreshContainersAndServices(currentContainers []*Contai
 	return containers, services, nil
 }
 
-// GetServicesFromContainers derives services from container labels for all projects
-func (c *DockerCommand) GetServicesFromContainers(containers []*Container) []*Service {
+// GetServicesFromContainers derives services from container labels for all projects.
+// Services that were already present in existingServices are reused (same pointer)
+// so that panels can keep selection and avoid rebuilding the whole list.
+func (c *DockerCommand) GetServicesFromContainers(containers []*Container, existingServices []*Service) []*Service {
 	// Use project+service as key to avoid duplicates
 	type serviceKey struct {
 		project string
 		service string
+	}
+	existingByID := make(map[string]*Service, len(existingServices))
+	for _, service := range existingServices {
+		existingByID[service.ID] = service
 	}
 	seen := make(map[serviceKey]bool)
 	services := make([]*Service, 0, len(containers))
@@ -298,9 +304,17 @@ func (c *DockerCommand) GetServicesFromContainers(containers []*Container) []*Se
 			continue
 		}
 		seen[key] = true
+		serviceID := ctr.ProjectName + "-" + ctr.ServiceName
+		// reuse the existing service object if we already knew about it
+		if existingService, ok := existingByID[serviceID]; ok {
+			existingService.Name = ctr.ServiceName
+			existingService.ProjectName = ctr.ProjectName
+			services = append(services, existingService)
+			continue
+		}
 		services = append(services, &Service{
 			Name:          ctr.ServiceName,
-			ID:            ctr.ProjectName + "-" + ctr.ServiceName,
+			ID:            serviceID,
 			ProjectName:   ctr.ProjectName,
 			OSCommand:     c.OSCommand,
 			Log:           c.Log,
@@ -429,10 +443,17 @@ func (c *DockerCommand) GetContainers(existingContainers []*Container) ([]*Conta
 	return ownContainers, nil
 }
 
-// GetServices gets services
-func (c *DockerCommand) GetServices() ([]*Service, error) {
+// GetServices gets services. Services that were already present in
+// existingServices are reused (same pointer) so that panels can keep
+// selection and avoid rebuilding the whole list.
+func (c *DockerCommand) GetServices(existingServices []*Service) ([]*Service, error) {
 	if !c.InDockerComposeProject {
 		return nil, nil
+	}
+
+	existingByID := make(map[string]*Service, len(existingServices))
+	for _, service := range existingServices {
+		existingByID[service.ID] = service
 	}
 
 	composeCommand := c.Config.UserConfig.CommandTemplates.DockerCompose
@@ -448,9 +469,16 @@ func (c *DockerCommand) GetServices() ([]*Service, error) {
 	lines := utils.SplitLines(output)
 	services := make([]*Service, len(lines))
 	for i, str := range lines {
+		serviceID := c.LocalProjectName + "-" + str
+		if existingService, ok := existingByID[serviceID]; ok {
+			existingService.Name = str
+			existingService.ProjectName = c.LocalProjectName
+			services[i] = existingService
+			continue
+		}
 		services[i] = &Service{
 			Name:          str,
-			ID:            c.LocalProjectName + "-" + str,
+			ID:            serviceID,
 			ProjectName:   c.LocalProjectName,
 			OSCommand:     c.OSCommand,
 			Log:           c.Log,

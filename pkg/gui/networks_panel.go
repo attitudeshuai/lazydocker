@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/fatih/color"
@@ -80,23 +81,23 @@ func (gui *Gui) networkConfigStr(network *commands.Network) string {
 	return output
 }
 
-func (gui *Gui) reloadNetworks() error {
-	if err := gui.refreshStateNetworks(); err != nil {
-		return err
-	}
-
-	return gui.Panels.Networks.RerenderList()
-}
-
-func (gui *Gui) refreshStateNetworks() error {
-	networks, err := gui.DockerCommand.RefreshNetworks()
+// reconcileNetworks is the reconciliation job for the networks unit: one
+// docker fetch followed by an atomic list replacement + repaint.
+func (gui *Gui) reconcileNetworks(apply func(func() error) error) error {
+	networks, err := gui.DockerCommand.RefreshNetworks(gui.Panels.Networks.List.GetAllItems())
 	if err != nil {
 		return err
 	}
 
-	gui.Panels.Networks.SetItems(networks)
+	return apply(func() error {
+		gui.Panels.Networks.SetItems(networks)
+		return gui.Panels.Networks.RenderList()
+	})
+}
 
-	return nil
+// reloadNetworks synchronously reconciles the networks unit.
+func (gui *Gui) reloadNetworks() error {
+	return gui.reconcile.RequestSync(context.Background(), reconcileNetworks)
 }
 
 func (gui *Gui) handleNetworksRemoveMenu(g *gocui.Gui, v *gocui.View) error {
