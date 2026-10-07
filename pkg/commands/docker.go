@@ -48,6 +48,34 @@ type DockerCommand struct {
 	ServiceMutex     deadlock.Mutex
 
 	Closers []io.Closer
+
+	// initialDockerHost(Present) is the DOCKER_HOST value present at startup,
+	// before any ssh tunnel rewrote it. It lets us restore the environment a
+	// fresh launch would see when switching to the "default" target.
+	initialDockerHost        string
+	initialDockerHostPresent bool
+
+	// connectionMutex guards the atomic replacement of Client and Closers
+	// during a runtime connection switch.
+	connectionMutex sync.Mutex
+}
+
+// connectionProbeTimeout is how long we give the candidate daemon to answer a
+// ping before declaring the switch target unreachable.
+const connectionProbeTimeout = 8 * time.Second
+
+// ConnectionCandidate is a fully established and verified connection that has
+// not been activated yet. Until CommitConnection is called, the currently
+// running connection is left completely untouched.
+type ConnectionCandidate struct {
+	Client  *client.Client
+	Host    string
+	Closers []io.Closer
+
+	// envValue(Present) is the DOCKER_HOST value child processes (e.g.
+	// `docker compose`) must see once the candidate is active.
+	envValue   string
+	envPresent bool
 }
 
 var _ io.Closer = &DockerCommand{}
@@ -101,6 +129,10 @@ func newDockerClient(dockerHost string) (*client.Client, error) {
 
 // NewDockerCommand it runs docker commands
 func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.TranslationSet, config *config.AppConfig, errorChan chan error) (*DockerCommand, error) {
+	// Remember the environment before ssh tunnel handling may rewrite it, so
+	// runtime switches can restore what a fresh launch would have seen.
+	initialDockerHost, initialDockerHostPresent := os.LookupEnv(dockerHostEnvKey)
+
 	dockerHost, err := determineDockerHost()
 	if err != nil {
 		ogLog.Printf("> could not determine host %v", err)
@@ -138,7 +170,10 @@ func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.Translat
 		Client:                 cli,
 		ErrorChan:              errorChan,
 		InDockerComposeProject: true,
-		Closers:                []io.Closer{tunnelCloser},
+		Closers:                []io.Closer{tunnelCloser, cli},
+
+		initialDockerHost:        initialDockerHost,
+		initialDockerHostPresent: initialDockerHostPresent,
 	}
 
 	dockerCommand.setDockerComposeCommand(config)
@@ -189,13 +224,18 @@ func (c *DockerCommand) Close() error {
 	return utils.CloseMany(c.Closers)
 }
 
-func (c *DockerCommand) CreateClientStatMonitor(container *Container) {
+// CreateClientStatMonitor streams stats for the container using the container's
+// own client handle. When ctx is cancelled (connection switch / shutdown) the
+// stream is aborted and the goroutine exits quietly without touching any panel.
+func (c *DockerCommand) CreateClientStatMonitor(ctx context.Context, container *Container) {
 	container.MonitoringStats = true
-	stream, err := c.Client.ContainerStats(context.Background(), container.ID, true)
+	stream, err := container.Client.ContainerStats(ctx, container.ID, true)
 	if err != nil {
 		// not creating error panel because if we've disconnected from docker we'll
-		// have already created an error panel
-		c.Log.Error(err)
+		// have already created an error panel; a connection switch is not an error
+		if ctx.Err() == nil {
+			c.Log.Error(err)
+		}
 		container.MonitoringStats = false
 		return
 	}
@@ -529,10 +569,18 @@ func (c *DockerCommand) DockerComposeConfigForProject(project *Project) string {
 //   - host retrieved from the current context (specified via DOCKER_CONTEXT)
 //   - "default docker host" for the host operating system, otherwise
 func determineDockerHost() (string, error) {
+	return determineDockerHostWithEnv(os.Getenv("DOCKER_HOST"))
+}
+
+// determineDockerHostWithEnv contains the actual host resolution; the supplied
+// value stands in for the DOCKER_HOST environment variable. Factoring it out
+// lets a runtime switch re-run the exact startup logic while pretending the
+// ssh-tunnel-rewritten env isn't there.
+func determineDockerHostWithEnv(dockerHostFromEnv string) (string, error) {
 	// If the docker host is explicitly set via the "DOCKER_HOST" environment variable,
 	// then its a no-brainer :shrug:
-	if os.Getenv("DOCKER_HOST") != "" {
-		return os.Getenv("DOCKER_HOST"), nil
+	if dockerHostFromEnv != "" {
+		return dockerHostFromEnv, nil
 	}
 
 	currentContext := os.Getenv("DOCKER_CONTEXT")
@@ -552,19 +600,24 @@ func determineDockerHost() (string, error) {
 		return defaultDockerHost, nil
 	}
 
+	return hostFromContextName(currentContext)
+}
+
+// hostFromContextName resolves the docker host of a named docker context.
+func hostFromContextName(name string) (string, error) {
 	storeConfig := ctxstore.NewConfig(
 		func() interface{} { return &ddocker.EndpointMeta{} },
 		ctxstore.EndpointTypeGetter(ddocker.DockerEndpoint, func() interface{} { return &ddocker.EndpointMeta{} }),
 	)
 
 	st := ctxstore.New(cliconfig.ContextStoreDir(), storeConfig)
-	md, err := st.GetMetadata(currentContext)
+	md, err := st.GetMetadata(name)
 	if err != nil {
 		return "", err
 	}
 	dockerEP, ok := md.Endpoints[ddocker.DockerEndpoint]
 	if !ok {
-		return "", err
+		return "", fmt.Errorf("docker context %q has no docker endpoint", name)
 	}
 	dockerEPMeta, ok := dockerEP.(ddocker.EndpointMeta)
 	if !ok {
@@ -582,4 +635,123 @@ func determineDockerHost() (string, error) {
 	// ```
 	// In such scenario, we mimic the `docker` cli and try to connect to the "default docker host".
 	return defaultDockerHost, nil
+}
+
+// resolveSwitchTarget interprets what the user asked to connect to:
+//   - empty string: host a fresh launch would use right now (env / current context / default)
+//   - value containing "://": a docker host address taken as-is (unix://, tcp://, ssh://, npipe://)
+//   - anything else: the name of a docker context
+func (c *DockerCommand) resolveSwitchTarget(target string) (string, error) {
+	if target == "" {
+		return determineDockerHostWithEnv(c.initialDockerHost)
+	}
+
+	if strings.Contains(target, "://") {
+		return target, nil
+	}
+
+	return hostFromContextName(target)
+}
+
+// PrepareConnection establishes a tunnel (if the host is ssh://), creates a
+// client and pings the daemon to verify the target, WITHOUT touching the
+// active connection. On any failure the candidate is torn down (tunnel killed,
+// client closed) and the environment is restored, leaving the running
+// connection exactly as it was and returning the reason.
+func (c *DockerCommand) PrepareConnection(target string) (*ConnectionCandidate, error) {
+	host, err := c.resolveSwitchTarget(target)
+	if err != nil {
+		return nil, err
+	}
+
+	// Setting up an ssh tunnel works through DOCKER_HOST. Remember what was
+	// active so it can be restored if the candidate never comes up.
+	previousHost, previousPresent := os.LookupEnv(dockerHostEnvKey)
+	restoreEnv := func() {
+		if previousPresent {
+			_ = os.Setenv(dockerHostEnvKey, previousHost)
+		} else {
+			_ = os.Unsetenv(dockerHostEnvKey)
+		}
+	}
+
+	closers := []io.Closer{}
+	effectiveHost := host
+
+	if strings.HasPrefix(host, "ssh://") {
+		_ = os.Setenv(dockerHostEnvKey, host)
+		tunnelCloser, err := ssh.NewSSHHandler(c.OSCommand).HandleSSHDockerHost()
+		if err != nil {
+			restoreEnv()
+			return nil, fmt.Errorf("set up ssh tunnel for %q: %w", host, err)
+		}
+		closers = append(closers, tunnelCloser)
+
+		// HandleSSHDockerHost overrides DOCKER_HOST to point at the local
+		// tunneled unix socket; connect through that.
+		effectiveHost = os.Getenv(dockerHostEnvKey)
+	}
+
+	cli, err := newDockerClient(effectiveHost)
+	if err != nil {
+		_ = utils.CloseMany(closers)
+		restoreEnv()
+		return nil, fmt.Errorf("create docker client for %q: %w", host, err)
+	}
+	closers = append(closers, cli)
+
+	// Probe before committing: an unverified client never replaces the live one.
+	pingCtx, cancel := context.WithTimeout(context.Background(), connectionProbeTimeout)
+	defer cancel()
+	if _, err := cli.Ping(pingCtx); err != nil {
+		_ = utils.CloseMany(closers)
+		restoreEnv()
+		return nil, fmt.Errorf("probe docker daemon at %q: %w", host, err)
+	}
+
+	candidate := &ConnectionCandidate{
+		Client:  cli,
+		Host:    host,
+		Closers: closers,
+	}
+
+	// Determine what child processes (e.g. `docker compose`) must see.
+	switch {
+	case strings.HasPrefix(host, "ssh://"):
+		// keep pointing at the local tunneled socket
+		candidate.envValue = effectiveHost
+		candidate.envPresent = true
+	case target != "":
+		// explicit host/context: make subprocesses follow the same daemon
+		candidate.envValue = host
+		candidate.envPresent = true
+	default:
+		// "default" target: restore exactly what a fresh launch would see
+		candidate.envValue = c.initialDockerHost
+		candidate.envPresent = c.initialDockerHostPresent
+	}
+
+	return candidate, nil
+}
+
+// CommitConnection atomically activates a verified candidate — replacing
+// Client, Closers and the DOCKER_HOST seen by child processes — and returns
+// the closers that belonged to the previous connection so the caller can
+// release them after rewiring the rest of the application.
+func (c *DockerCommand) CommitConnection(candidate *ConnectionCandidate) []io.Closer {
+	c.connectionMutex.Lock()
+	defer c.connectionMutex.Unlock()
+
+	previousClosers := c.Closers
+
+	c.Client = candidate.Client
+	c.Closers = candidate.Closers
+
+	if candidate.envPresent {
+		_ = os.Setenv(dockerHostEnvKey, candidate.envValue)
+	} else {
+		_ = os.Unsetenv(dockerHostEnvKey)
+	}
+
+	return previousClosers
 }

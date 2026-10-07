@@ -129,6 +129,13 @@ func (gui *Gui) GetInitialKeybindings() []*Binding {
 			Handler:  gui.handleCustomCommand,
 		},
 		{
+			ViewName:    "",
+			Key:         'C',
+			Modifier:    gocui.ModNone,
+			Handler:     gui.handleSwitchConnectionPrompt,
+			Description: gui.Tr.SwitchConnection,
+		},
+		{
 			ViewName:    "project",
 			Key:         'e',
 			Modifier:    gocui.ModNone,

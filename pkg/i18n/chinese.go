@@ -132,5 +132,9 @@ func chineseSet() TranslationSet {
 		LcNextScreenMode: "下一个屏幕模式（正常/半屏/全屏）",
 		LcPrevScreenMode: "上一个屏幕模式",
 		FilterPrompt:     "筛选",
+
+		SwitchConnection:          "切换 Docker 连接",
+		SwitchConnectionTitle:     "切换 Docker 守护端：输入主机地址或上下文名称（留空 = 启动时默认）",
+		SwitchingConnectionStatus: "正在切换连接",
 	}
 }

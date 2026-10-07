@@ -136,6 +136,10 @@ type TranslationSet struct {
 	FocusImages     string
 	FocusVolumes    string
 	FocusNetworks   string
+
+	SwitchConnection          string
+	SwitchConnectionTitle     string
+	SwitchingConnectionStatus string
 }
 
 func englishSet() TranslationSet {
@@ -279,5 +283,9 @@ func englishSet() TranslationSet {
 		FocusImages:     "focus images panel",
 		FocusVolumes:    "focus volumes panel",
 		FocusNetworks:   "focus networks panel",
+
+		SwitchConnection:          "switch docker connection",
+		SwitchConnectionTitle:     "Switch docker daemon: host URL or context name (blank = startup default)",
+		SwitchingConnectionStatus: "switching connection",
 	}
 }

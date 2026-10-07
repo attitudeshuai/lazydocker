@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/events"
+	"github.com/docker/docker/client"
 
 	"github.com/go-errors/errors"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/jesseduffield/lazydocker/pkg/gui/types"
 	"github.com/jesseduffield/lazydocker/pkg/i18n"
 	"github.com/jesseduffield/lazydocker/pkg/tasks"
+	"github.com/jesseduffield/lazydocker/pkg/utils"
 	"github.com/sasha-s/go-deadlock"
 	"github.com/sirupsen/logrus"
 )
@@ -45,6 +48,27 @@ type Gui struct {
 	Mutexes
 
 	Panels Panels
+
+	// Everything tied to the ACTIVE docker connection (event stream, per-
+	// container stats streams) derives from connectionCtx. Cancelling it aborts
+	// those streams; loopWG covers the owner goroutines, statsWG the per-
+	// container monitor goroutines. Used for both shutdown and connection switches.
+	connectionCtx    context.Context
+	cancelConnection context.CancelFunc
+	loopWG           sync.WaitGroup
+	statsWG          sync.WaitGroup
+
+	// refreshTrigger invokes the throttled full refresh; stored so restarted
+	// background loops after a connection switch can trigger it.
+	refreshTrigger func()
+
+	// refreshMutex is held (RLock) while refresh goroutines are running; a
+	// connection switch takes it exclusively so no in-flight refresh from the
+	// old daemon can land its results during or after the swap.
+	refreshMutex sync.RWMutex
+
+	// switchMutex serialises connection switches so two can't overlap.
+	switchMutex sync.Mutex
 }
 
 type Panels struct {
@@ -256,11 +280,9 @@ func (gui *Gui) Run() error {
 		}
 	}
 
-	ctx, finish := context.WithCancel(context.Background())
-	defer finish()
-
-	go gui.listenForEvents(ctx, throttledRefresh.Trigger)
-	go gui.monitorContainerStats(ctx)
+	gui.refreshTrigger = throttledRefresh.Trigger
+	gui.startBackgroundLoops()
+	defer gui.stopBackgroundLoops()
 
 	go func() {
 		throttledRefresh.Trigger()
@@ -296,31 +318,148 @@ func (gui *Gui) updateContainerDetails() error {
 }
 
 func (gui *Gui) refresh() {
-	go func() {
-		// Refresh containers/services first, then projects (which depend on
-		// container labels to discover projects).
+	runRefresh := func(f func() error) {
+		go func() {
+			gui.refreshMutex.RLock()
+			defer gui.refreshMutex.RUnlock()
+
+			if err := f(); err != nil {
+				gui.Log.Error(err)
+			}
+		}()
+	}
+
+	// Refresh containers/services first, then projects (which depend on
+	// container labels to discover projects).
+	runRefresh(func() error {
 		if err := gui.refreshContainersAndServices(); err != nil {
-			gui.Log.Error(err)
+			return err
 		}
-		if err := gui.refreshProject(); err != nil {
-			gui.Log.Error(err)
-		}
+		return gui.refreshProject()
+	})
+	runRefresh(gui.reloadVolumes)
+	runRefresh(gui.reloadNetworks)
+	runRefresh(gui.reloadImages)
+}
+
+// startBackgroundLoops creates the cancellable context bound to the active
+// connection and launches the event listener and stats collector on it.
+func (gui *Gui) startBackgroundLoops() {
+	ctx, cancel := context.WithCancel(context.Background())
+	gui.connectionCtx = ctx
+	gui.cancelConnection = cancel
+
+	gui.loopWG.Add(2)
+	go func() {
+		defer gui.loopWG.Done()
+		gui.listenForEvents(ctx, gui.refreshTrigger)
 	}()
 	go func() {
-		if err := gui.reloadVolumes(); err != nil {
-			gui.Log.Error(err)
-		}
+		defer gui.loopWG.Done()
+		gui.monitorContainerStats(ctx)
 	}()
-	go func() {
-		if err := gui.reloadNetworks(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
-	go func() {
-		if err := gui.reloadImages(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
+}
+
+// stopBackgroundLoops cancels every stream that belongs to the active
+// connection and waits for the owning goroutines — first the two loops (so no
+// new stats goroutine can be spawned), then the per-container stat monitors.
+// Used on both shutdown and connection switch.
+func (gui *Gui) stopBackgroundLoops() {
+	if gui.cancelConnection != nil {
+		gui.cancelConnection()
+	}
+	gui.loopWG.Wait()
+	gui.statsWG.Wait()
+}
+
+// handleSwitchConnectionPrompt asks for a host URL or context name and, on
+// confirmation, performs a verified runtime connection switch.
+func (gui *Gui) handleSwitchConnectionPrompt(g *gocui.Gui, v *gocui.View) error {
+	return gui.createPromptPanel(gui.Tr.SwitchConnectionTitle, func(g *gocui.Gui, v *gocui.View) error {
+		target := gui.trimmedContent(v)
+		return gui.WithWaitingStatus(gui.Tr.SwitchingConnectionStatus, func() error {
+			return gui.switchConnection(target)
+		})
+	})
+}
+
+// switchConnection is the runtime connection-switch pathway:
+//  1. establish the candidate and verify it with a ping — on failure the live
+//     connection is untouched and the reason is returned;
+//  2. quiesce the app (background loops, event/stats streams, main-panel task,
+//     in-flight refreshes);
+//  3. atomically replace client, tunnel and the handles stored on resource
+//     objects and clear lists so no old-daemon row can remain;
+//  4. explicitly release the old connection;
+//  5. rebuild subscriptions/collectors on the new connection and fully refresh.
+func (gui *Gui) switchConnection(target string) error {
+	gui.switchMutex.Lock()
+	defer gui.switchMutex.Unlock()
+
+	// 1. Bring up and verify before touching anything live.
+	candidate, err := gui.DockerCommand.PrepareConnection(target)
+	if err != nil {
+		return err
+	}
+
+	// 2. Quiesce everything that talks to the old daemon.
+	gui.PauseBackgroundThreads = true
+	gui.stopBackgroundLoops()
+	gui.taskManager.Close()
+
+	// Drain in-flight refreshes and block any new result from landing while
+	// the swap is in progress.
+	gui.refreshMutex.Lock()
+
+	// 3. Atomic swap of client/tunnel/environment, then rewire the handles
+	// stored on the panel objects and clear the lists.
+	previousClosers := gui.DockerCommand.CommitConnection(candidate)
+	gui.replaceClientHandles(candidate.Client)
+	gui.resetPanelLists()
+	gui.State.Panels.Main.ObjectKey = ""
+	gui.clearMainView()
+
+	// 4. Explicitly release the old connection (client and ssh tunnel).
+	_ = utils.CloseMany(previousClosers)
+	gui.refreshMutex.Unlock()
+
+	// 5. Rebuild subscriptions and collectors on the new connection, resume
+	// background work and repopulate every panel from the new daemon.
+	gui.startBackgroundLoops()
+	gui.PauseBackgroundThreads = false
+	gui.refreshTrigger()
+
+	// re-run selection so the main panel shows the new daemon immediately
+	return gui.newLineFocused(gui.g.CurrentView())
+}
+
+// replaceClientHandles updates the docker client handle stored on every
+// resource object currently in the panels, so no object can keep talking to
+// the daemon we switched away from.
+func (gui *Gui) replaceClientHandles(newClient *client.Client) {
+	for _, ctr := range gui.Panels.Containers.List.GetAllItems() {
+		ctr.Client = newClient
+	}
+	for _, img := range gui.Panels.Images.List.GetAllItems() {
+		img.Client = newClient
+	}
+	for _, vol := range gui.Panels.Volumes.List.GetAllItems() {
+		vol.Client = newClient
+	}
+	for _, nw := range gui.Panels.Networks.List.GetAllItems() {
+		nw.Client = newClient
+	}
+}
+
+// resetPanelLists empties every side panel (and clamps selection to zero) so
+// the old daemon's rows cannot remain; subsequent refreshes repopulate them.
+func (gui *Gui) resetPanelLists() {
+	gui.Panels.Projects.SetItems(nil)
+	gui.Panels.Services.SetItems(nil)
+	gui.Panels.Containers.SetItems(nil)
+	gui.Panels.Images.SetItems(nil)
+	gui.Panels.Volumes.SetItems(nil)
+	gui.Panels.Networks.SetItems(nil)
 }
 
 func (gui *Gui) listenForEvents(ctx context.Context, refresh func()) {
@@ -336,7 +475,14 @@ func (gui *Gui) listenForEvents(ctx context.Context, refresh func()) {
 
 outer:
 	for {
-		messageChan, errChan := gui.DockerCommand.Client.Events(context.Background(), events.ListOptions{})
+		if ctx.Err() != nil {
+			return
+		}
+
+		// bind the actual event stream to ctx: cancelling it (connection
+		// switch / shutdown) aborts the HTTP request instead of leaving a
+		// live subscription on the old daemon.
+		messageChan, errChan := gui.DockerCommand.Client.Events(ctx, events.ListOptions{})
 
 		if errorCount > 0 {
 			select {
@@ -370,6 +516,11 @@ outer:
 
 				gui.Log.Infof("received event of type: %s", message.Type)
 			case err := <-errChan:
+				// the stream ended because we're switching away: leave
+				// silently, the new connection gets its own listener
+				if ctx.Err() != nil {
+					return
+				}
 				onError(err)
 				continue outer
 			}
@@ -483,9 +634,16 @@ func (gui *Gui) monitorContainerStats(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// snapshot the containers: a switch may clear the list, and stat
+			// goroutines are tracked so stopBackgroundLoops can wait for them
 			for _, container := range gui.Panels.Containers.List.GetAllItems() {
 				if !container.MonitoringStats {
-					go gui.DockerCommand.CreateClientStatMonitor(container)
+					container := container
+					gui.statsWG.Add(1)
+					go func() {
+						defer gui.statsWG.Done()
+						gui.DockerCommand.CreateClientStatMonitor(ctx, container)
+					}()
 				}
 			}
 		}

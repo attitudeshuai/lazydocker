@@ -8,6 +8,11 @@ import (
 )
 
 func (gui *Gui) QueueTask(f func(ctx context.Context)) error {
+	// A connection switch holds refreshMutex exclusively; block any task
+	// (e.g. a panel selection) from queueing mid-switch. After the switch the
+	// final selection replaces any task that started with a stale object.
+	gui.refreshMutex.RLock()
+	defer gui.refreshMutex.RUnlock()
 	return gui.taskManager.NewTask(f)
 }
 
