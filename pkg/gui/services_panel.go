@@ -113,10 +113,17 @@ func (gui *Gui) renderServiceContainerEnv(service *commands.Service) tasks.TaskF
 
 func (gui *Gui) renderServiceStats(service *commands.Service) tasks.TaskFunc {
 	if service.Container == nil {
-		return gui.NewSimpleRenderStringTask(func() string { return gui.Tr.NoContainer })
+		// No linked container: still show the live service-level summary so a
+		// service with no running container has a meaningful stats tab.
+		return gui.renderScopeSummary(func() (string, commands.StatsScope) {
+			title := fmt.Sprintf("%s — %s", service.Name, gui.Tr.StatsSummaryTitle)
+			return title, commands.ServiceStatsScope(service.ProjectName, service.Name)
+		})
 	}
 
-	return gui.renderContainerStats(service.Container)
+	return gui.renderContainerStatsWithHeader(service.Container, func(container *commands.Container) string {
+		return gui.serviceStatsHeader(service) + "\n" + gui.containerStatsStatusHeader(container)
+	})
 }
 
 func (gui *Gui) renderServiceTop(service *commands.Service) tasks.TaskFunc {

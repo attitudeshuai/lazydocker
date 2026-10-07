@@ -24,18 +24,24 @@ type Container struct {
 	ContainerNumber string // might make this an int in the future if need be
 
 	// OneOff tells us if the container is just a job container or is actually bound to the service
-	OneOff          bool
-	ProjectName     string
-	ID              string
-	Container       container.Summary
-	Client          *client.Client
-	OSCommand       *OSCommand
-	Log             *logrus.Entry
-	StatHistory     []*RecordedStats
-	Details         container.InspectResponse
-	MonitoringStats bool
-	DockerCommand   LimitedDockerCommand
-	Tr              *i18n.TranslationSet
+	OneOff      bool
+	ProjectName string
+	ID          string
+	Container   container.Summary
+	Client      *client.Client
+	OSCommand   *OSCommand
+	Log         *logrus.Entry
+	StatHistory []*RecordedStats
+	// CoarseHistory holds downsampled samples for the configured retention
+	// tiers (finest tier first), one slice per tier. It stays empty when no
+	// retention tiers are configured. CoarseWeight[i][j] is the number of
+	// fine-grained samples represented by CoarseHistory[i][j]; it lets us
+	// average averages correctly when rolling samples into coarser tiers.
+	CoarseHistory [][]*RecordedStats
+	coarseWeight  [][]int
+	Details       container.InspectResponse
+	DockerCommand LimitedDockerCommand
+	Tr            *i18n.TranslationSet
 
 	StatsMutex deadlock.Mutex
 }

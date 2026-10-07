@@ -232,20 +232,7 @@ func (gui *Gui) containerConfigStr(container *commands.Container) string {
 }
 
 func (gui *Gui) renderContainerStats(container *commands.Container) tasks.TaskFunc {
-	return gui.NewTickerTask(TickerTaskOpts{
-		Func: func(ctx context.Context, notifyStopped chan struct{}) {
-			contents, err := presentation.RenderStats(gui.Config.UserConfig, container, gui.Views.Main.Width())
-			if err != nil {
-				_ = gui.createErrorPanel(err.Error())
-			}
-
-			gui.reRenderStringMain(contents)
-		},
-		Duration:   time.Second,
-		Before:     func(ctx context.Context) { gui.clearMainView() },
-		Wrap:       false, // wrapping looks bad here so we're overriding the config value
-		Autoscroll: false,
-	})
+	return gui.renderContainerStatsWithHeader(container, gui.containerStatsStatusHeader)
 }
 
 func (gui *Gui) renderContainerTop(container *commands.Container) tasks.TaskFunc {

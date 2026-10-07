@@ -156,11 +156,9 @@ func (s *ContainerStats) CalculateContainerMemoryUsage() float64 {
 }
 
 func (c *Container) appendStats(stats *RecordedStats, maxDuration time.Duration) {
-	c.StatsMutex.Lock()
-	defer c.StatsMutex.Unlock()
-
-	c.StatHistory = append(c.StatHistory, stats)
-	c.eraseOldHistory(maxDuration)
+	// No tiers: identical to the original behaviour (raw history trimmed to
+	// maxDuration, older samples dropped).
+	c.recordStats(stats, maxDuration, nil)
 }
 
 // eraseOldHistory removes any history before the user-specified max duration

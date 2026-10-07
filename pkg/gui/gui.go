@@ -474,20 +474,25 @@ func (gui *Gui) Update(f func() error) {
 }
 
 func (gui *Gui) monitorContainerStats(ctx context.Context) {
-	// periodically loop through running containers and see if we need to create a monitor goroutine for any
-	// every second we check if we need to spawn a new goroutine
+	// The StatsManager owns every collector goroutine and their lifecycle; this
+	// loop only asks it to ensure collection for containers it has not seen
+	// yet, and to forget containers that have disappeared. Manual pause/stop is
+	// respected, and a container can never get two concurrent collectors.
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+
+	manager := gui.DockerCommand.Stats
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, container := range gui.Panels.Containers.List.GetAllItems() {
-				if !container.MonitoringStats {
-					go gui.DockerCommand.CreateClientStatMonitor(container)
-				}
+			containers := gui.Panels.Containers.List.GetAllItems()
+			for _, container := range containers {
+				manager.Ensure(container)
 			}
+			manager.Reconcile(containers)
 		}
 	}
 }

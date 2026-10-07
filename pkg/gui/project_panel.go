@@ -26,6 +26,11 @@ func (gui *Gui) getProjectPanel() *panels.SideListPanel[*commands.Project] {
 						Render: gui.renderAllLogs,
 					},
 					{
+						Key:    "stats",
+						Title:  gui.Tr.StatsTitle,
+						Render: gui.renderProjectStats,
+					},
+					{
 						Key:    "config",
 						Title:  gui.Tr.DockerComposeConfigTitle,
 						Render: gui.renderDockerComposeConfig,

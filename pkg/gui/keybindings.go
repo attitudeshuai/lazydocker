@@ -263,6 +263,13 @@ func (gui *Gui) GetInitialKeybindings() []*Binding {
 			Description: gui.Tr.OpenInBrowser,
 		},
 		{
+			ViewName:    "containers",
+			Key:         'g',
+			Modifier:    gocui.ModNone,
+			Handler:     gui.handleContainersStatsMenu,
+			Description: gui.Tr.StatsMenu,
+		},
+		{
 			ViewName:    "services",
 			Key:         'u',
 			Modifier:    gocui.ModNone,
@@ -366,6 +373,13 @@ func (gui *Gui) GetInitialKeybindings() []*Binding {
 			Modifier:    gocui.ModNone,
 			Handler:     gui.handleServicesOpenInBrowserCommand,
 			Description: gui.Tr.OpenInBrowser,
+		},
+		{
+			ViewName:    "services",
+			Key:         'g',
+			Modifier:    gocui.ModNone,
+			Handler:     gui.handleServicesStatsMenu,
+			Description: gui.Tr.StatsMenu,
 		},
 		{
 			ViewName:    "images",

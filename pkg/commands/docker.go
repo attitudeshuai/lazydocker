@@ -1,9 +1,7 @@
 package commands
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	ogLog "log"
@@ -13,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	cliconfig "github.com/docker/cli/cli/config"
 	ddocker "github.com/docker/cli/cli/context/docker"
@@ -46,6 +43,9 @@ type DockerCommand struct {
 	ErrorChan        chan error
 	ContainerMutex   deadlock.Mutex
 	ServiceMutex     deadlock.Mutex
+
+	// Stats owns the lifecycle of every container stats collection goroutine.
+	Stats *StatsManager
 
 	Closers []io.Closer
 }
@@ -138,6 +138,7 @@ func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.Translat
 		Client:                 cli,
 		ErrorChan:              errorChan,
 		InDockerComposeProject: true,
+		Stats:                  newStatsManager(cli, log, config),
 		Closers:                []io.Closer{tunnelCloser},
 	}
 
@@ -185,42 +186,13 @@ func (c *DockerCommand) setDockerComposeCommand(config *config.AppConfig) {
 	}
 }
 
+// Close stops the stats subsystem (draining all collector goroutines and
+// closing their daemon connections) before closing the remaining resources.
 func (c *DockerCommand) Close() error {
+	if c.Stats != nil {
+		c.Stats.Close()
+	}
 	return utils.CloseMany(c.Closers)
-}
-
-func (c *DockerCommand) CreateClientStatMonitor(container *Container) {
-	container.MonitoringStats = true
-	stream, err := c.Client.ContainerStats(context.Background(), container.ID, true)
-	if err != nil {
-		// not creating error panel because if we've disconnected from docker we'll
-		// have already created an error panel
-		c.Log.Error(err)
-		container.MonitoringStats = false
-		return
-	}
-
-	defer stream.Body.Close()
-
-	scanner := bufio.NewScanner(stream.Body)
-	for scanner.Scan() {
-		data := scanner.Bytes()
-		var stats ContainerStats
-		_ = json.Unmarshal(data, &stats)
-
-		recordedStats := &RecordedStats{
-			ClientStats: stats,
-			DerivedStats: DerivedStats{
-				CPUPercentage:    stats.CalculateContainerCPUPercentage(),
-				MemoryPercentage: stats.CalculateContainerMemoryUsage(),
-			},
-			RecordedAt: time.Now(),
-		}
-
-		container.appendStats(recordedStats, c.Config.UserConfig.Stats.MaxDuration)
-	}
-
-	container.MonitoringStats = false
 }
 
 func (c *DockerCommand) RefreshContainersAndServices(currentContainers []*Container) ([]*Container, []*Service, error) {

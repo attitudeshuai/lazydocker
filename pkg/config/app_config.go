@@ -282,6 +282,33 @@ type StatsConfig struct {
 	// MaxDuration tells us how long to collect stats for. Currently this defaults
 	// to "5m" i.e. 5 minutes.
 	MaxDuration time.Duration `yaml:"maxDuration,omitempty"`
+
+	// Retention optionally keeps stats older than MaxDuration in coarser,
+	// downsampled tiers. When it is not set, stats older than MaxDuration are
+	// dropped exactly as they were before tiered retention existed.
+	Retention *RetentionConfig `yaml:"retention,omitempty"`
+}
+
+// RetentionConfig configures tiered, downsampled retention of stats history.
+// Recent samples stay at their original granularity for Stats.MaxDuration (the
+// "fine" tier); samples that age out of the fine window are rolled into the
+// first tier below, and so on. Tiers must be ordered from finest to coarsest;
+// each tier's Interval should be a multiple of the previous tier's interval and
+// its Duration should be longer than the previous tier's duration.
+type RetentionConfig struct {
+	// Tiers lists the coarser-than-fine retention tiers, finest first.
+	Tiers []RetentionTier `yaml:"tiers,omitempty"`
+}
+
+// RetentionTier is one downsampled retention tier. Samples assigned to this
+// tier are averaged into buckets of Interval and kept for Duration.
+type RetentionTier struct {
+	// Duration is how long a downsampled sample remains in this tier before
+	// ageing into the next (coarser) tier, or being dropped from the last tier.
+	Duration time.Duration `yaml:"duration,omitempty"`
+
+	// Interval is the bucket size that incoming samples are averaged into.
+	Interval time.Duration `yaml:"interval,omitempty"`
 }
 
 // CustomCommands contains the custom commands that you might want to use on any

@@ -17,10 +17,14 @@ import (
 	"github.com/samber/lo"
 )
 
-func RenderStats(userConfig *config.UserConfig, container *commands.Container, viewWidth int) (string, error) {
+// RenderStats renders a container's stats view. header (which may be empty) is
+// shown above the graphs and typically carries the collection state and, for
+// service-scoped views, the service/project level aggregate summary. The
+// graphs themselves keep reading the container's raw history unchanged.
+func RenderStats(userConfig *config.UserConfig, container *commands.Container, header string, viewWidth int) (string, error) {
 	stats, ok := container.GetLastStats()
 	if !ok {
-		return "", nil
+		return header, nil
 	}
 
 	graphSpecs := userConfig.Stats.Graphs
@@ -49,6 +53,10 @@ func RenderStats(userConfig *config.UserConfig, container *commands.Container, v
 		dataSent,
 		utils.ColoredYamlString(string(originalStats)),
 	)
+
+	if strings.TrimSpace(header) != "" {
+		contents = header + "\n" + contents
+	}
 
 	return contents, nil
 }

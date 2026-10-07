@@ -136,6 +136,36 @@ type TranslationSet struct {
 	FocusImages     string
 	FocusVolumes    string
 	FocusNetworks   string
+
+	StatsMenu                 string
+	StatsStart                string
+	StatsPause                string
+	StatsStop                 string
+	StatsRestart              string
+	StatsScopeContainer       string
+	StatsScopeAllContainers   string
+	StatsScopeService         string
+	StatsScopeProject         string
+	StatsCollectionLabel      string
+	StatsStateIdle            string
+	StatsStateConnecting      string
+	StatsStateRunning         string
+	StatsStateRetrying        string
+	StatsStatePaused          string
+	StatsStateStopped         string
+	StatsAttemptLabel         string
+	StatsNextRetryLabel       string
+	StatsSummaryTitle         string
+	StatsContainersLabel      string
+	StatsReportingLabel       string
+	StatsCPUTotalLabel        string
+	StatsCPUAverageLabel      string
+	StatsMemoryTotalLabel     string
+	StatsMemoryAverageLabel   string
+	StatsMemoryUsageLabel     string
+	StatsTrafficReceivedLabel string
+	StatsTrafficSentLabel     string
+	StatsAggregateEmpty       string
 }
 
 func englishSet() TranslationSet {
@@ -279,5 +309,35 @@ func englishSet() TranslationSet {
 		FocusImages:     "focus images panel",
 		FocusVolumes:    "focus volumes panel",
 		FocusNetworks:   "focus networks panel",
+
+		StatsMenu:                 "stats",
+		StatsStart:                "start stats",
+		StatsPause:                "pause stats",
+		StatsStop:                 "stop stats",
+		StatsRestart:              "restart stats",
+		StatsScopeContainer:       "this container",
+		StatsScopeAllContainers:   "all containers",
+		StatsScopeService:         "this service",
+		StatsScopeProject:         "this project",
+		StatsCollectionLabel:      "Collection",
+		StatsStateIdle:            "idle",
+		StatsStateConnecting:      "connecting",
+		StatsStateRunning:         "running",
+		StatsStateRetrying:        "retrying",
+		StatsStatePaused:          "paused",
+		StatsStateStopped:         "stopped",
+		StatsAttemptLabel:         "attempt",
+		StatsNextRetryLabel:       "next retry",
+		StatsSummaryTitle:         "Summary",
+		StatsContainersLabel:      "Containers",
+		StatsReportingLabel:       "reporting",
+		StatsCPUTotalLabel:        "CPU total",
+		StatsCPUAverageLabel:      "CPU average",
+		StatsMemoryTotalLabel:     "Memory total",
+		StatsMemoryAverageLabel:   "Memory average",
+		StatsMemoryUsageLabel:     "Memory usage",
+		StatsTrafficReceivedLabel: "Traffic received",
+		StatsTrafficSentLabel:     "Traffic sent",
+		StatsAggregateEmpty:       "No containers in scope",
 	}
 }
