@@ -189,7 +189,7 @@ func (gui *Gui) handleServiceRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 			LabelColumns: option.getDisplayStrings(),
 			OnPress: func() error {
 				return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-					if err := gui.OSCommand.RunCommand(option.command); err != nil {
+					if err := gui.runTrackedCommand("service.remove", service.LedgerTarget(), option.command); err != nil {
 						return gui.createErrorPanel(err.Error())
 					}
 
@@ -316,7 +316,7 @@ func (gui *Gui) handleServiceAttach(g *gocui.Gui, v *gocui.View) error {
 		return gui.createErrorPanel(err.Error())
 	}
 
-	return gui.runSubprocess(c)
+	return gui.runSubprocessTracked("service.attach", service.LedgerTarget(), c)
 }
 
 func (gui *Gui) handleServiceRenderLogsToMain(g *gocui.Gui, v *gocui.View) error {
@@ -330,7 +330,7 @@ func (gui *Gui) handleServiceRenderLogsToMain(g *gocui.Gui, v *gocui.View) error
 		return gui.createErrorPanel(err.Error())
 	}
 
-	return gui.runSubprocess(c)
+	return gui.runSubprocessTracked("service.logs", service.LedgerTarget(), c)
 }
 
 func (gui *Gui) handleProjectUp(g *gocui.Gui, v *gocui.View) error {
@@ -345,7 +345,7 @@ func (gui *Gui) handleProjectUp(g *gocui.Gui, v *gocui.View) error {
 		)
 
 		return gui.WithWaitingStatus(gui.Tr.UppingProjectStatus, func() error {
-			if err := gui.OSCommand.RunCommand(cmdStr); err != nil {
+			if err := gui.runTrackedCommand("project.up", gui.projectLedgerTarget(project), cmdStr); err != nil {
 				return gui.createErrorPanel(err.Error())
 			}
 			return nil
@@ -374,7 +374,7 @@ func (gui *Gui) handleProjectDown(g *gocui.Gui, v *gocui.View) error {
 			command:     downCommand,
 			onPress: func() error {
 				return gui.WithWaitingStatus(gui.Tr.DowningStatus, func() error {
-					if err := gui.OSCommand.RunCommand(downCommand); err != nil {
+					if err := gui.runTrackedCommand("project.down", gui.projectLedgerTarget(project), downCommand); err != nil {
 						return gui.createErrorPanel(err.Error())
 					}
 					return nil
@@ -386,7 +386,7 @@ func (gui *Gui) handleProjectDown(g *gocui.Gui, v *gocui.View) error {
 			command:     downWithVolumesCommand,
 			onPress: func() error {
 				return gui.WithWaitingStatus(gui.Tr.DowningStatus, func() error {
-					if err := gui.OSCommand.RunCommand(downWithVolumesCommand); err != nil {
+					if err := gui.runTrackedCommand("project.down-volumes", gui.projectLedgerTarget(project), downWithVolumesCommand); err != nil {
 						return gui.createErrorPanel(err.Error())
 					}
 					return nil
@@ -452,7 +452,7 @@ func (gui *Gui) handleServiceRestartMenu(g *gocui.Gui, v *gocui.View) error {
 			),
 			onPress: func() error {
 				return gui.WithWaitingStatus(gui.Tr.RestartingStatus, func() error {
-					if err := gui.OSCommand.RunCommand(recreateCommand); err != nil {
+					if err := gui.runTrackedCommand("service.recreate", service.LedgerTarget(), recreateCommand); err != nil {
 						return gui.createErrorPanel(err.Error())
 					}
 					return nil
@@ -466,7 +466,7 @@ func (gui *Gui) handleServiceRestartMenu(g *gocui.Gui, v *gocui.View) error {
 				gui.DockerCommand.NewCommandObject(commands.CommandObject{Service: service}),
 			),
 			onPress: func() error {
-				return gui.runSubprocess(gui.OSCommand.RunCustomCommand(rebuildCommand))
+				return gui.runSubprocessTracked("service.rebuild", service.LedgerTarget(), gui.OSCommand.RunCustomCommand(rebuildCommand))
 			},
 		},
 	}

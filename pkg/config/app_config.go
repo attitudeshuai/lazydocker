@@ -60,6 +60,13 @@ type UserConfig struct {
 	// Replacements determines how we render an item's info
 	Replacements Replacements `yaml:"replacements,omitempty"`
 
+	// Ledger configures the operation ledger, which records every write
+	// operation (docker API calls as well as custom/bulk subprocess commands)
+	// against containers, images, volumes, networks, services and projects.
+	// It is disabled by default; when disabled operations behave exactly as
+	// without it.
+	Ledger LedgerConfig `yaml:"ledger,omitempty"`
+
 	// For demo purposes: any list item with one of these strings as a substring
 	// will be filtered out and not displayed.
 	// Not documented because it's subject to change
@@ -284,6 +291,27 @@ type StatsConfig struct {
 	MaxDuration time.Duration `yaml:"maxDuration,omitempty"`
 }
 
+// LedgerConfig configures the operation ledger. The ledger is a durable,
+// append-only log of operations performed against docker objects (both SDK
+// calls and subprocess commands). It rolls over on both a size and an age
+// limit.
+type LedgerConfig struct {
+	// Enabled turns the ledger on. It defaults to false so that users who
+	// have not opted in see exactly the old execution/error behaviour.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// MaxSize bounds the on-disk ledger file. Accepts human readable sizes
+	// such as "500KB", "1MB" or "2GB" (a plain number means bytes). Empty
+	// means 1MB. Records older than the limit are evicted first, then the
+	// oldest remaining records until the file fits.
+	MaxSize string `yaml:"maxSize,omitempty"`
+
+	// MaxAge bounds how long records are kept as a Go duration string (e.g.
+	// "720h" for 30 days). Empty means 30 days. Records older than this are
+	// evicted regardless of file size.
+	MaxAge string `yaml:"maxAge,omitempty"`
+}
+
 // CustomCommands contains the custom commands that you might want to use on any
 // given service or container
 type CustomCommands struct {
@@ -473,6 +501,11 @@ func GetDefaultConfig() UserConfig {
 		},
 		Replacements: Replacements{
 			ImageNamePrefixes: map[string]string{},
+		},
+		Ledger: LedgerConfig{
+			Enabled: false,
+			MaxSize: "1MB",
+			MaxAge:  "720h",
 		},
 	}
 }

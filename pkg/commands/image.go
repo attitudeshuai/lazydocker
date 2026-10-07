@@ -8,6 +8,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/fatih/color"
+	"github.com/jesseduffield/lazydocker/pkg/ledger"
 	"github.com/jesseduffield/lazydocker/pkg/utils"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
@@ -27,11 +28,14 @@ type Image struct {
 
 // Remove removes the image
 func (i *Image) Remove(options image.RemoveOptions) error {
-	if _, err := i.Client.ImageRemove(context.Background(), i.ID, options); err != nil {
-		return err
-	}
-
-	return nil
+	return i.DockerCommand.Ledger().Start(ledger.PathAPI, "image.remove").
+		For(i.LedgerTarget()).
+		Run(func() error {
+			if _, err := i.Client.ImageRemove(context.Background(), i.ID, options); err != nil {
+				return err
+			}
+			return nil
+		})
 }
 
 func getHistoryResponseItemDisplayStrings(layer image.HistoryResponseItem) []string {
@@ -138,6 +142,18 @@ func (c *DockerCommand) RefreshImages() ([]*Image, error) {
 
 // PruneImages prunes images
 func (c *DockerCommand) PruneImages() error {
-	_, err := c.Client.ImagesPrune(context.Background(), filters.Args{})
-	return err
+	return c.pruneImages("", 0, 0)
+}
+
+// BatchPruneImages prunes images, recording the prune as one item of a bulk
+// operation.
+func (c *DockerCommand) BatchPruneImages(batchID string, batchIndex, batchTotal int) error {
+	return c.pruneImages(batchID, batchIndex, batchTotal)
+}
+
+func (c *DockerCommand) pruneImages(batchID string, batchIndex, batchTotal int) error {
+	return c.TrackAPI("image.prune", ledger.Target{Kind: ledger.ObjectImage}, batchID, batchIndex, batchTotal, func() error {
+		_, err := c.Client.ImagesPrune(context.Background(), filters.Args{})
+		return err
+	})
 }

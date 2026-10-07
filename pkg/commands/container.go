@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/go-errors/errors"
 	"github.com/jesseduffield/lazydocker/pkg/i18n"
+	"github.com/jesseduffield/lazydocker/pkg/ledger"
 	"github.com/jesseduffield/lazydocker/pkg/utils"
 	"github.com/sasha-s/go-deadlock"
 	"github.com/sirupsen/logrus"
@@ -40,8 +41,16 @@ type Container struct {
 	StatsMutex deadlock.Mutex
 }
 
-// Remove removes the container
-func (c *Container) Remove(options container.RemoveOptions) error {
+// recordAPI runs an API-backed container operation through the ledger outlet.
+func (c *Container) recordAPI(action string, batchID string, batchIndex, batchTotal int, fn func() error) error {
+	return c.DockerCommand.Ledger().Start(ledger.PathAPI, action).
+		For(c.LedgerTarget()).
+		Batch(batchID, batchIndex, batchTotal).
+		Run(fn)
+}
+
+// remove performs the SDK call without recording; callers record via recordAPI.
+func (c *Container) remove(options container.RemoveOptions) error {
 	c.Log.Warn(fmt.Sprintf("removing container %s", c.Name))
 	if err := c.Client.ContainerRemove(context.Background(), c.ID, options); err != nil {
 		if strings.Contains(err.Error(), "Stop the container before attempting removal or force remove") {
@@ -57,34 +66,66 @@ func (c *Container) Remove(options container.RemoveOptions) error {
 	return nil
 }
 
+// Remove removes the container
+func (c *Container) Remove(options container.RemoveOptions) error {
+	return c.recordAPI("container.remove", "", 0, 0, func() error {
+		return c.remove(options)
+	})
+}
+
+// BatchRemove removes the container as one item of a bulk operation.
+func (c *Container) BatchRemove(options container.RemoveOptions, batchID string, batchIndex, batchTotal int) error {
+	return c.recordAPI("container.remove", batchID, batchIndex, batchTotal, func() error {
+		return c.remove(options)
+	})
+}
+
 // Start starts the container
 func (c *Container) Start() error {
 	c.Log.Warn(fmt.Sprintf("starting container %s", c.Name))
-	return c.Client.ContainerStart(context.Background(), c.ID, container.StartOptions{})
+	return c.recordAPI("container.start", "", 0, 0, func() error {
+		return c.Client.ContainerStart(context.Background(), c.ID, container.StartOptions{})
+	})
 }
 
 // Stop stops the container
 func (c *Container) Stop() error {
 	c.Log.Warn(fmt.Sprintf("stopping container %s", c.Name))
-	return c.Client.ContainerStop(context.Background(), c.ID, container.StopOptions{})
+	return c.recordAPI("container.stop", "", 0, 0, func() error {
+		return c.Client.ContainerStop(context.Background(), c.ID, container.StopOptions{})
+	})
+}
+
+// BatchStop stops the container as one item of a bulk operation.
+func (c *Container) BatchStop(batchID string, batchIndex, batchTotal int) error {
+	c.Log.Warn(fmt.Sprintf("stopping container %s", c.Name))
+	return c.recordAPI("container.stop", batchID, batchIndex, batchTotal, func() error {
+		return c.Client.ContainerStop(context.Background(), c.ID, container.StopOptions{})
+	})
 }
 
 // Pause pauses the container
 func (c *Container) Pause() error {
 	c.Log.Warn(fmt.Sprintf("pausing container %s", c.Name))
-	return c.Client.ContainerPause(context.Background(), c.ID)
+	return c.recordAPI("container.pause", "", 0, 0, func() error {
+		return c.Client.ContainerPause(context.Background(), c.ID)
+	})
 }
 
 // Unpause unpauses the container
 func (c *Container) Unpause() error {
 	c.Log.Warn(fmt.Sprintf("unpausing container %s", c.Name))
-	return c.Client.ContainerUnpause(context.Background(), c.ID)
+	return c.recordAPI("container.unpause", "", 0, 0, func() error {
+		return c.Client.ContainerUnpause(context.Background(), c.ID)
+	})
 }
 
 // Restart restarts the container
 func (c *Container) Restart() error {
 	c.Log.Warn(fmt.Sprintf("restarting container %s", c.Name))
-	return c.Client.ContainerRestart(context.Background(), c.ID, container.StopOptions{})
+	return c.recordAPI("container.restart", "", 0, 0, func() error {
+		return c.Client.ContainerRestart(context.Background(), c.ID, container.StopOptions{})
+	})
 }
 
 // Attach attaches the container
@@ -125,8 +166,20 @@ func (c *Container) Top(ctx context.Context) (container.TopResponse, error) {
 
 // PruneContainers prunes containers
 func (c *DockerCommand) PruneContainers() error {
-	_, err := c.Client.ContainersPrune(context.Background(), filters.Args{})
-	return err
+	return c.pruneContainers("", 0, 0)
+}
+
+// BatchPruneContainers prunes containers, recording the prune as one item of
+// a bulk operation.
+func (c *DockerCommand) BatchPruneContainers(batchID string, batchIndex, batchTotal int) error {
+	return c.pruneContainers(batchID, batchIndex, batchTotal)
+}
+
+func (c *DockerCommand) pruneContainers(batchID string, batchIndex, batchTotal int) error {
+	return c.TrackAPI("container.prune", ledger.Target{Kind: ledger.ObjectContainer}, batchID, batchIndex, batchTotal, func() error {
+		_, err := c.Client.ContainersPrune(context.Background(), filters.Args{})
+		return err
+	})
 }
 
 // Inspect returns details about the container

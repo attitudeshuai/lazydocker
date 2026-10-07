@@ -6,6 +6,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/jesseduffield/lazydocker/pkg/ledger"
 	"github.com/sirupsen/logrus"
 )
 
@@ -46,11 +47,27 @@ func (c *DockerCommand) RefreshVolumes() ([]*Volume, error) {
 
 // PruneVolumes prunes volumes
 func (c *DockerCommand) PruneVolumes() error {
-	_, err := c.Client.VolumesPrune(context.Background(), filters.Args{})
-	return err
+	return c.pruneVolumes("", 0, 0)
+}
+
+// BatchPruneVolumes prunes volumes, recording the prune as one item of a bulk
+// operation.
+func (c *DockerCommand) BatchPruneVolumes(batchID string, batchIndex, batchTotal int) error {
+	return c.pruneVolumes(batchID, batchIndex, batchTotal)
+}
+
+func (c *DockerCommand) pruneVolumes(batchID string, batchIndex, batchTotal int) error {
+	return c.TrackAPI("volume.prune", ledger.Target{Kind: ledger.ObjectVolume}, batchID, batchIndex, batchTotal, func() error {
+		_, err := c.Client.VolumesPrune(context.Background(), filters.Args{})
+		return err
+	})
 }
 
 // Remove removes the volume
 func (v *Volume) Remove(force bool) error {
-	return v.Client.VolumeRemove(context.Background(), v.Name, force)
+	return v.DockerCommand.Ledger().Start(ledger.PathAPI, "volume.remove").
+		For(v.LedgerTarget()).
+		Run(func() error {
+			return v.Client.VolumeRemove(context.Background(), v.Name, force)
+		})
 }

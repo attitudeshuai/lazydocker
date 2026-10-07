@@ -127,6 +127,39 @@ func (c *OSCommand) RunCommand(command string) error {
 	return err
 }
 
+// RunCommandWithExitCode behaves like RunCommand but also returns the process
+// exit code. The exit code is 0 on success, the code reported by the process
+// when it exits with one, and -1 when the process could not be started or was
+// terminated by a signal. It is used by the operation ledger so subprocess
+// records can retain both the raw command text and the exit code.
+func (c *OSCommand) RunCommandWithExitCode(command string) (int, error) {
+	cmd := c.ExecutableFromString(command)
+	before := time.Now()
+	output, runErr := cmd.Output()
+	exitCode := -1
+	if runErr == nil {
+		exitCode = 0
+	} else if exitErr, ok := runErr.(*exec.ExitError); ok {
+		exitCode = exitErr.ExitCode()
+	}
+	_, err := sanitisedCommandOutput(output, runErr)
+	c.Log.Warn(fmt.Sprintf("'%s': %s", command, time.Since(before)))
+	return exitCode, err
+}
+
+// ExitCode extracts the exit code from a command error returned by the os/exec
+// package. It returns -1 when the error is not an ExitError (process failed to
+// start, killed by a signal, ...).
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
 // FileType tells us if the file is a file, directory or other
 func (c *OSCommand) FileType(path string) string {
 	fileInfo, err := os.Stat(path)

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/jesseduffield/lazydocker/pkg/ledger"
 	"github.com/jesseduffield/lazydocker/pkg/utils"
 	"github.com/sirupsen/logrus"
 )
@@ -27,30 +28,35 @@ func (s *Service) Remove(options container.RemoveOptions) error {
 
 // Stop stops the service's containers
 func (s *Service) Stop() error {
-	return s.runCommand(s.OSCommand.Config.UserConfig.CommandTemplates.StopService)
+	return s.runCommand("service.stop", s.OSCommand.Config.UserConfig.CommandTemplates.StopService)
 }
 
 // Up up's the service
 func (s *Service) Up() error {
-	return s.runCommand(s.OSCommand.Config.UserConfig.CommandTemplates.UpService)
+	return s.runCommand("service.up", s.OSCommand.Config.UserConfig.CommandTemplates.UpService)
 }
 
 // Restart restarts the service
 func (s *Service) Restart() error {
-	return s.runCommand(s.OSCommand.Config.UserConfig.CommandTemplates.RestartService)
+	return s.runCommand("service.restart", s.OSCommand.Config.UserConfig.CommandTemplates.RestartService)
 }
 
 // Start starts the service
 func (s *Service) Start() error {
-	return s.runCommand(s.OSCommand.Config.UserConfig.CommandTemplates.StartService)
+	return s.runCommand("service.start", s.OSCommand.Config.UserConfig.CommandTemplates.StartService)
 }
 
-func (s *Service) runCommand(templateCmdStr string) error {
+// runCommand resolves a compose command template and runs it through the
+// subprocess execution path, recording the raw command text and exit code in
+// the operation ledger.
+func (s *Service) runCommand(action string, templateCmdStr string) error {
 	command := utils.ApplyTemplate(
 		templateCmdStr,
 		s.DockerCommand.NewCommandObject(CommandObject{Service: s}),
 	)
-	return s.OSCommand.RunCommand(command)
+	op := s.DockerCommand.Ledger().Start(ledger.PathProcess, action).For(s.LedgerTarget())
+	exitCode, err := s.OSCommand.RunCommandWithExitCode(command)
+	return op.FinishProcess(command, exitCode, err)
 }
 
 // Attach attaches to the service

@@ -427,13 +427,14 @@ func (gui *Gui) handleContainerAttach(g *gocui.Gui, v *gocui.View) error {
 		return gui.createErrorPanel(err.Error())
 	}
 
-	return gui.runSubprocessWithMessage(c, gui.Tr.DetachFromContainerShortCut)
+	return gui.runSubprocessTrackedWithMessage("container.attach", ctr.LedgerTarget(), c, gui.Tr.DetachFromContainerShortCut)
 }
 
 func (gui *Gui) handlePruneContainers() error {
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmPruneContainers, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.PruningStatus, func() error {
-			err := gui.DockerCommand.PruneContainers()
+			batchID := gui.newLedgerBatchID()
+			err := gui.DockerCommand.BatchPruneContainers(batchID, 0, 1)
 			if err != nil {
 				return gui.createErrorPanel(err.Error())
 			}
@@ -471,7 +472,7 @@ func (gui *Gui) containerExecShell(container *commands.Container) error {
 	resolvedCommand := utils.ApplyTemplate("docker exec -it {{ .Container.ID }} /bin/sh -c 'eval $(grep ^$(id -un): /etc/passwd | cut -d : -f 7-)'", commandObject)
 	// attach and return the subprocess error
 	cmd := gui.OSCommand.ExecutableFromString(resolvedCommand)
-	return gui.runSubprocess(cmd)
+	return gui.runSubprocessTracked("container.exec-shell", container.LedgerTarget(), cmd)
 }
 
 func (gui *Gui) handleContainersCustomCommand(g *gocui.Gui, v *gocui.View) error {
@@ -492,8 +493,12 @@ func (gui *Gui) handleContainersCustomCommand(g *gocui.Gui, v *gocui.View) error
 func (gui *Gui) handleStopContainers() error {
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmStopContainers, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.StoppingStatus, func() error {
-			for _, ctr := range gui.Panels.Containers.List.GetAllItems() {
-				if err := ctr.Stop(); err != nil {
+			allContainers := gui.Panels.Containers.List.GetAllItems()
+			// One batch id ties together every per-container result of this
+			// bulk stop.
+			batchID := gui.newLedgerBatchID()
+			for i, ctr := range allContainers {
+				if err := ctr.BatchStop(batchID, i, len(allContainers)); err != nil {
 					gui.Log.Error(err)
 				}
 			}
@@ -506,8 +511,12 @@ func (gui *Gui) handleStopContainers() error {
 func (gui *Gui) handleRemoveContainers() error {
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmRemoveContainers, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-			for _, ctr := range gui.Panels.Containers.List.GetAllItems() {
-				if err := ctr.Remove(container.RemoveOptions{Force: true}); err != nil {
+			allContainers := gui.Panels.Containers.List.GetAllItems()
+			// One batch id ties together every per-container result of this
+			// bulk remove.
+			batchID := gui.newLedgerBatchID()
+			for i, ctr := range allContainers {
+				if err := ctr.BatchRemove(container.RemoveOptions{Force: true}, batchID, i, len(allContainers)); err != nil {
 					gui.Log.Error(err)
 				}
 			}

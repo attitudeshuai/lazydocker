@@ -48,6 +48,8 @@ func (b *Binding) GetKey() string {
 		return "PgUp"
 	case 65507:
 		return "PgDn"
+	case int(gocui.KeyF1):
+		return "F1"
 	}
 
 	return fmt.Sprintf("%c", key)
@@ -127,6 +129,13 @@ func (gui *Gui) GetInitialKeybindings() []*Binding {
 			Key:      'X',
 			Modifier: gocui.ModNone,
 			Handler:  gui.handleCustomCommand,
+		},
+		{
+			ViewName:    "",
+			Key:         gocui.KeyF1,
+			Modifier:    gocui.ModNone,
+			Handler:     wrappedHandler(gui.handleViewLedger),
+			Description: gui.Tr.ViewLedger,
 		},
 		{
 			ViewName:    "project",

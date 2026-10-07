@@ -24,6 +24,7 @@ import (
 	"github.com/jesseduffield/lazydocker/pkg/commands/ssh"
 	"github.com/jesseduffield/lazydocker/pkg/config"
 	"github.com/jesseduffield/lazydocker/pkg/i18n"
+	"github.com/jesseduffield/lazydocker/pkg/ledger"
 	"github.com/jesseduffield/lazydocker/pkg/utils"
 	"github.com/sasha-s/go-deadlock"
 	"github.com/sirupsen/logrus"
@@ -47,6 +48,11 @@ type DockerCommand struct {
 	ContainerMutex   deadlock.Mutex
 	ServiceMutex     deadlock.Mutex
 
+	// ledger is the unified operation record outlet for both the API and the
+	// subprocess execution paths. It may be nil in tests; all recording
+	// helpers are nil-safe.
+	ledger *ledger.Ledger
+
 	Closers []io.Closer
 }
 
@@ -55,6 +61,32 @@ var _ io.Closer = &DockerCommand{}
 // LimitedDockerCommand is a stripped-down DockerCommand with just the methods the container/service/image might need
 type LimitedDockerCommand interface {
 	NewCommandObject(CommandObject) CommandObject
+	// Ledger returns the operation ledger (nil when disabled/uninitialised).
+	Ledger() *ledger.Ledger
+}
+
+// Ledger returns the operation ledger. Safe to use the result even when it is
+// nil (the ledger package's recorders are nil-safe no-ops).
+func (c *DockerCommand) Ledger() *ledger.Ledger {
+	return c.ledger
+}
+
+// TrackAPI runs an SDK-backed operation and records it (when the ledger is
+// enabled). batchID tags records that are one item of a bulk operation.
+func (c *DockerCommand) TrackAPI(action string, target ledger.Target, batchID string, batchIndex, batchTotal int, fn func() error) error {
+	op := c.ledger.Start(ledger.PathAPI, action).For(target)
+	if batchID != "" {
+		op = op.Batch(batchID, batchIndex, batchTotal)
+	}
+	return op.Run(fn)
+}
+
+// TrackProcess runs a shell command and records the subprocess outcome (raw
+// command text and exit code) when the ledger is enabled.
+func (c *DockerCommand) TrackProcess(action string, target ledger.Target, command string) error {
+	op := c.ledger.Start(ledger.PathProcess, action).For(target)
+	exitCode, err := c.OSCommand.RunCommandWithExitCode(command)
+	return op.FinishProcess(command, exitCode, err)
 }
 
 // CommandObject is what we pass to our template resolvers when we are running a custom command. We do not guarantee that all fields will be populated: just the ones that make sense for the current context
@@ -100,7 +132,7 @@ func newDockerClient(dockerHost string) (*client.Client, error) {
 }
 
 // NewDockerCommand it runs docker commands
-func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.TranslationSet, config *config.AppConfig, errorChan chan error) (*DockerCommand, error) {
+func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.TranslationSet, config *config.AppConfig, errorChan chan error, ledgerBook *ledger.Ledger) (*DockerCommand, error) {
 	dockerHost, err := determineDockerHost()
 	if err != nil {
 		ogLog.Printf("> could not determine host %v", err)
@@ -130,6 +162,9 @@ func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.Translat
 		ogLog.Fatal(err)
 	}
 
+	// Record the resolved connection target on every subsequent ledger entry.
+	ledgerBook.SetConnection(dockerHost)
+
 	dockerCommand := &DockerCommand{
 		Log:                    log,
 		OSCommand:              osCommand,
@@ -138,6 +173,7 @@ func NewDockerCommand(log *logrus.Entry, osCommand *OSCommand, tr *i18n.Translat
 		Client:                 cli,
 		ErrorChan:              errorChan,
 		InDockerComposeProject: true,
+		ledger:                 ledgerBook,
 		Closers:                []io.Closer{tunnelCloser},
 	}
 

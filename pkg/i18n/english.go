@@ -136,6 +136,12 @@ type TranslationSet struct {
 	FocusImages     string
 	FocusVolumes    string
 	FocusNetworks   string
+
+	ViewLedger     string
+	LedgerTitle    string
+	LedgerEmpty    string
+	LedgerDisabled string
+	LedgerScoped   string
 }
 
 func englishSet() TranslationSet {
@@ -279,5 +285,11 @@ func englishSet() TranslationSet {
 		FocusImages:     "focus images panel",
 		FocusVolumes:    "focus volumes panel",
 		FocusNetworks:   "focus networks panel",
+
+		ViewLedger:     "view operation ledger",
+		LedgerTitle:    "Operation ledger",
+		LedgerEmpty:    "No ledger entries (yet).",
+		LedgerDisabled: "The operation ledger is disabled. Enable it with `ledger.enabled: true` in your config.",
+		LedgerScoped:   "Filtered to the selected object",
 	}
 }

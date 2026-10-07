@@ -235,5 +235,5 @@ func (gui *Gui) handleViewAllLogs(g *gocui.Gui, v *gocui.View) error {
 		return gui.createErrorPanel(err.Error())
 	}
 
-	return gui.runSubprocess(c)
+	return gui.runSubprocessTracked("project.logs", gui.projectLedgerTarget(project), c)
 }

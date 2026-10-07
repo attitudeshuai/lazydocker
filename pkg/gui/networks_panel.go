@@ -140,7 +140,8 @@ func (gui *Gui) handleNetworksRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 func (gui *Gui) handlePruneNetworks() error {
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmPruneNetworks, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.PruningStatus, func() error {
-			err := gui.DockerCommand.PruneNetworks()
+			batchID := gui.newLedgerBatchID()
+			err := gui.DockerCommand.BatchPruneNetworks(batchID, 0, 1)
 			if err != nil {
 				return gui.createErrorPanel(err.Error())
 			}

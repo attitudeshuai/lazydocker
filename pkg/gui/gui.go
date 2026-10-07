@@ -18,6 +18,7 @@ import (
 	"github.com/jesseduffield/lazydocker/pkg/gui/panels"
 	"github.com/jesseduffield/lazydocker/pkg/gui/types"
 	"github.com/jesseduffield/lazydocker/pkg/i18n"
+	"github.com/jesseduffield/lazydocker/pkg/ledger"
 	"github.com/jesseduffield/lazydocker/pkg/tasks"
 	"github.com/sasha-s/go-deadlock"
 	"github.com/sirupsen/logrus"
@@ -36,6 +37,10 @@ type Gui struct {
 	taskManager   *tasks.TaskManager
 	ErrorChan     chan error
 	Views         Views
+
+	// Ledger is the unified outlet recording operation results for the
+	// subprocess and the docker API execution paths. May be nil/disabled.
+	Ledger *ledger.Ledger
 
 	// if we've suspended the gui (e.g. because we've switched to a subprocess)
 	// we typically want to pause some things that are running like background
@@ -125,7 +130,7 @@ func getScreenMode(config *config.AppConfig) WindowMaximisation {
 }
 
 // NewGui builds a new gui handler
-func NewGui(log *logrus.Entry, dockerCommand *commands.DockerCommand, oSCommand *commands.OSCommand, tr *i18n.TranslationSet, config *config.AppConfig, errorChan chan error) (*Gui, error) {
+func NewGui(log *logrus.Entry, dockerCommand *commands.DockerCommand, oSCommand *commands.OSCommand, tr *i18n.TranslationSet, config *config.AppConfig, errorChan chan error, ledgerBook *ledger.Ledger) (*Gui, error) {
 	initialState := guiState{
 		Platform: *oSCommand.Platform,
 		Panels: &panelStates{
@@ -149,6 +154,7 @@ func NewGui(log *logrus.Entry, dockerCommand *commands.DockerCommand, oSCommand 
 		statusManager: &statusManager{},
 		taskManager:   tasks.NewTaskManager(log, tr),
 		ErrorChan:     errorChan,
+		Ledger:        ledgerBook,
 	}
 
 	deadlock.Opts.Disable = !gui.Config.Debug
@@ -164,6 +170,7 @@ func (gui *Gui) renderGlobalOptions() error {
 		"q":         gui.Tr.Quit,
 		"b":         gui.Tr.ViewBulkCommands,
 		"x":         gui.Tr.Menu,
+		"F1":        gui.Tr.ViewLedger,
 	})
 }
 

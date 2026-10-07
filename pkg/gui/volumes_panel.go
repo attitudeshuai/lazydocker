@@ -152,7 +152,8 @@ func (gui *Gui) handleVolumesRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 func (gui *Gui) handlePruneVolumes() error {
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmPruneVolumes, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.PruningStatus, func() error {
-			err := gui.DockerCommand.PruneVolumes()
+			batchID := gui.newLedgerBatchID()
+			err := gui.DockerCommand.BatchPruneVolumes(batchID, 0, 1)
 			if err != nil {
 				return gui.createErrorPanel(err.Error())
 			}

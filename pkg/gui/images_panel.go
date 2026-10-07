@@ -182,7 +182,8 @@ func (gui *Gui) handleImagesRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 func (gui *Gui) handlePruneImages() error {
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmPruneImages, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.PruningStatus, func() error {
-			err := gui.DockerCommand.PruneImages()
+			batchID := gui.newLedgerBatchID()
+			err := gui.DockerCommand.BatchPruneImages(batchID, 0, 1)
 			if err != nil {
 				return gui.createErrorPanel(err.Error())
 			}
