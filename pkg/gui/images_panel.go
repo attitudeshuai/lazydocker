@@ -30,6 +30,11 @@ func (gui *Gui) getImagesPanel() *panels.SideListPanel[*commands.Image] {
 						Title:  gui.Tr.ConfigTitle,
 						Render: gui.renderImageConfigTask,
 					},
+					{
+						Key:    "used-by",
+						Title:  gui.Tr.UsedByTitle,
+						Render: gui.renderImageUsedBy,
+					},
 				}
 			},
 			GetItemContextCacheKey: func(image *commands.Image) string {
@@ -164,11 +169,14 @@ func (gui *Gui) handleImagesRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 				color.New(color.FgRed).Sprint(option.command),
 			},
 			OnPress: func() error {
-				if err := img.Remove(option.configOptions); err != nil {
-					return gui.createErrorPanel(err.Error())
-				}
-
-				return nil
+				return gui.guardedDelete(guardedDeleteOpts{
+					target:  commands.ObjectRef{Type: commands.ImageObject, ID: img.ID, Name: img.Name},
+					project: img.Image.Labels["com.docker.compose.project"],
+					waiting: false,
+					remove: func(_ commands.ObjectRef) error {
+						return img.Remove(option.configOptions)
+					},
+				})
 			},
 		}
 	})

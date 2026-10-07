@@ -47,6 +47,12 @@ type DockerCommand struct {
 	ContainerMutex   deadlock.Mutex
 	ServiceMutex     deadlock.Mutex
 
+	// Relations is the latest snapshot of cross-object references. It is built
+	// off to the side and atomically swapped, so readers either see the old
+	// complete snapshot or the new one — never a half-collected graph.
+	relationsMu sync.RWMutex
+	relations   *RelationGraph
+
 	Closers []io.Closer
 }
 
@@ -187,6 +193,36 @@ func (c *DockerCommand) setDockerComposeCommand(config *config.AppConfig) {
 
 func (c *DockerCommand) Close() error {
 	return utils.CloseMany(c.Closers)
+}
+
+// Relations returns the current reference snapshot. It may be nil before the
+// first collection; callers must treat a graph whose Ready() is false as
+// "reference data unavailable", never as "no references". The returned graph
+// is immutable and therefore safe to keep using while a later refresh swaps
+// in a new one.
+func (c *DockerCommand) Relations() *RelationGraph {
+	c.relationsMu.RLock()
+	g := c.relations
+	c.relationsMu.RUnlock()
+	return g
+}
+
+// RefreshRelations builds a new reference snapshot from the freshly collected
+// objects and atomically swaps it in. Collection builds the whole graph before
+// publication, so creates/deletes that happen while collecting can only mark
+// an object uncertain — they can never leave the stored graph half updated.
+func (c *DockerCommand) RefreshRelations(
+	containers []*Container,
+	images []*Image,
+	volumes []*Volume,
+	networks []*Network,
+	services []*Service,
+) *RelationGraph {
+	g := BuildRelationGraph(containers, images, volumes, networks, services)
+	c.relationsMu.Lock()
+	c.relations = g
+	c.relationsMu.Unlock()
+	return g
 }
 
 func (c *DockerCommand) CreateClientStatMonitor(container *Container) {

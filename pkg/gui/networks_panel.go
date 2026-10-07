@@ -25,6 +25,11 @@ func (gui *Gui) getNetworksPanel() *panels.SideListPanel[*commands.Network] {
 						Title:  gui.Tr.ConfigTitle,
 						Render: gui.renderNetworkConfig,
 					},
+					{
+						Key:    "used-by",
+						Title:  gui.Tr.UsedByTitle,
+						Render: gui.renderNetworkUsedBy,
+					},
 				}
 			},
 			GetItemContextCacheKey: func(network *commands.Network) string {
@@ -121,11 +126,13 @@ func (gui *Gui) handleNetworksRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 		return &types.MenuItem{
 			LabelColumns: []string{option.description, color.New(color.FgRed).Sprint(option.command)},
 			OnPress: func() error {
-				return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-					if err := network.Remove(); err != nil {
-						return gui.createErrorPanel(err.Error())
-					}
-					return nil
+				return gui.guardedDelete(guardedDeleteOpts{
+					target:  commands.ObjectRef{Type: commands.NetworkObject, ID: network.Name, Name: network.Name},
+					project: network.Network.Labels["com.docker.compose.project"],
+					waiting: true,
+					remove: func(_ commands.ObjectRef) error {
+						return network.Remove()
+					},
 				})
 			},
 		}

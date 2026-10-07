@@ -25,6 +25,11 @@ func (gui *Gui) getVolumesPanel() *panels.SideListPanel[*commands.Volume] {
 						Title:  gui.Tr.ConfigTitle,
 						Render: gui.renderVolumeConfig,
 					},
+					{
+						Key:    "used-by",
+						Title:  gui.Tr.UsedByTitle,
+						Render: gui.renderVolumeUsedBy,
+					},
 				}
 			},
 			GetItemContextCacheKey: func(volume *commands.Volume) string {
@@ -133,11 +138,13 @@ func (gui *Gui) handleVolumesRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 		return &types.MenuItem{
 			LabelColumns: []string{option.description, color.New(color.FgRed).Sprint(option.command)},
 			OnPress: func() error {
-				return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-					if err := volume.Remove(option.force); err != nil {
-						return gui.createErrorPanel(err.Error())
-					}
-					return nil
+				return gui.guardedDelete(guardedDeleteOpts{
+					target:  commands.ObjectRef{Type: commands.VolumeObject, ID: volume.Name, Name: volume.Name},
+					project: volume.Volume.Labels["com.docker.compose.project"],
+					waiting: true,
+					remove: func(_ commands.ObjectRef) error {
+						return volume.Remove(option.force)
+					},
 				})
 			},
 		}

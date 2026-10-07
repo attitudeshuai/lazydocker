@@ -123,6 +123,20 @@ type TranslationSet struct {
 	CannotDisplayEnvVariables   string
 	CannotManageNonLocalService string
 
+	// UsedByTitle is the main tab showing what references the object
+	UsedByTitle string
+	// UsesTitle is the main tab showing what the object references
+	UsesTitle string
+
+	// DeletionBlockedTitle titles the error panel when policy rejects deletion
+	DeletionBlockedTitle string
+	// WarnContinuePrompt asks whether to continue despite references
+	WarnContinuePrompt string
+	// CascadePrompt asks whether to remove referrers layer by layer
+	CascadePrompt string
+	// BatchIssuesTitle titles the report after a batch cleanup with skips/failures
+	BatchIssuesTitle string
+
 	No  string
 	Yes string
 
@@ -243,6 +257,13 @@ func englishSet() TranslationSet {
 		NoContainerForService:       "No logs to show; service is not associated with a container",
 		CannotDisplayEnvVariables:   "Something went wrong while displaying environment variables",
 		CannotManageNonLocalService: "This service belongs to a different compose project. Run lazydocker from that project's directory to manage it.",
+
+		UsedByTitle:          "Used By",
+		UsesTitle:            "Uses",
+		DeletionBlockedTitle: "Deletion blocked",
+		WarnContinuePrompt:   "This object is still referenced by others (listed below). Continue anyway?",
+		CascadePrompt:        "The objects listed below will be removed layer by layer, then the target. Continue?",
+		BatchIssuesTitle:     "Some objects were not removed",
 
 		NoContainers: "No containers",
 		NoContainer:  "No container",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/events"
@@ -297,29 +298,53 @@ func (gui *Gui) updateContainerDetails() error {
 
 func (gui *Gui) refresh() {
 	go func() {
-		// Refresh containers/services first, then projects (which depend on
-		// container labels to discover projects).
-		if err := gui.refreshContainersAndServices(); err != nil {
-			gui.Log.Error(err)
-		}
+		// Collect all object types in parallel, exactly as before, but join
+		// them before building the reference snapshot so the relations are
+		// derived from one complete collection round.
+		var wg sync.WaitGroup
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			if err := gui.refreshContainersAndServices(); err != nil {
+				gui.Log.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := gui.reloadVolumes(); err != nil {
+				gui.Log.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := gui.reloadNetworks(); err != nil {
+				gui.Log.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := gui.reloadImages(); err != nil {
+				gui.Log.Error(err)
+			}
+		}()
+		wg.Wait()
+
+		// Projects derive from container labels, so refresh them once the
+		// containers have been collected.
 		if err := gui.refreshProject(); err != nil {
 			gui.Log.Error(err)
 		}
-	}()
-	go func() {
-		if err := gui.reloadVolumes(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
-	go func() {
-		if err := gui.reloadNetworks(); err != nil {
-			gui.Log.Error(err)
-		}
-	}()
-	go func() {
-		if err := gui.reloadImages(); err != nil {
-			gui.Log.Error(err)
-		}
+
+		// Build a whole new immutable snapshot off to the side and atomically
+		// swap it in. Creates/deletes during collection can only mark an
+		// object uncertain; they can never leave relations half updated.
+		gui.DockerCommand.RefreshRelations(
+			gui.Panels.Containers.List.GetAllItems(),
+			gui.Panels.Images.List.GetAllItems(),
+			gui.Panels.Volumes.List.GetAllItems(),
+			gui.Panels.Networks.List.GetAllItems(),
+			gui.Panels.Services.List.GetAllItems(),
+		)
 	}()
 }
 

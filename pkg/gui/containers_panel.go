@@ -60,6 +60,11 @@ func (gui *Gui) getContainersPanel() *panels.SideListPanel[*commands.Container] 
 						Title:  gui.Tr.TopTitle,
 						Render: gui.renderContainerTop,
 					},
+					{
+						Key:    "uses",
+						Title:  gui.Tr.UsesTitle,
+						Render: gui.renderContainerUses,
+					},
 				}
 			},
 			GetItemContextCacheKey: func(container *commands.Container) string {
@@ -326,19 +331,29 @@ func (gui *Gui) handleContainersRemoveMenu(g *gocui.Gui, v *gocui.View) error {
 	}
 
 	handleMenuPress := func(configOptions container.RemoveOptions) error {
-		return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-			if err := ctr.Remove(configOptions); err != nil {
+		target := commands.ObjectRef{Type: commands.ContainerObject, ID: ctr.ID, Name: ctr.Name}
+		return gui.guardedDelete(guardedDeleteOpts{
+			target:  target,
+			project: ctr.ProjectName,
+			waiting: true,
+			remove: func(_ commands.ObjectRef) error {
+				return ctr.Remove(configOptions)
+			},
+			onError: func(err error) error {
 				if commands.HasErrorCode(err, commands.MustStopContainer) {
 					return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.MustForceToRemoveContainer, func(g *gocui.Gui, v *gocui.View) error {
 						return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-							configOptions.Force = true
-							return ctr.Remove(configOptions)
+							forceOptions := configOptions
+							forceOptions.Force = true
+							if err := ctr.Remove(forceOptions); err != nil {
+								return gui.createErrorPanel(err.Error())
+							}
+							return nil
 						})
 					}, nil)
 				}
 				return gui.createErrorPanel(err.Error())
-			}
-			return nil
+			},
 		})
 	}
 
@@ -504,14 +519,43 @@ func (gui *Gui) handleStopContainers() error {
 }
 
 func (gui *Gui) handleRemoveContainers() error {
+	allContainers := gui.Panels.Containers.List.GetAllItems()
+
+	targets := make([]commands.BatchTarget, 0, len(allContainers))
+	for _, ctr := range allContainers {
+		targets = append(targets, commands.BatchTarget{
+			Target:  commands.ObjectRef{Type: commands.ContainerObject, ID: ctr.ID, Name: ctr.Name},
+			Project: ctr.ProjectName,
+		})
+	}
+	plans := gui.DockerCommand.PlanBatch(targets)
+
 	return gui.createConfirmationPanel(gui.Tr.Confirm, gui.Tr.ConfirmRemoveContainers, func(g *gocui.Gui, v *gocui.View) error {
 		return gui.WithWaitingStatus(gui.Tr.RemovingStatus, func() error {
-			for _, ctr := range gui.Panels.Containers.List.GetAllItems() {
-				if err := ctr.Remove(container.RemoveOptions{Force: true}); err != nil {
-					gui.Log.Error(err)
+			// No policy applies to any item: run the exact legacy code path —
+			// force-remove every container and log errors, with no report shown.
+			if commands.AllPlansLegacy(plans) {
+				for _, ctr := range allContainers {
+					if err := ctr.Remove(container.RemoveOptions{Force: true}); err != nil {
+						gui.Log.Error(err)
+					}
 				}
+				return nil
 			}
 
+			remove := func(ref commands.ObjectRef) error {
+				ctr := gui.findContainerByID(ref.ID)
+				if ctr == nil {
+					// disappeared while the batch was running: already gone
+					return nil
+				}
+				return ctr.Remove(container.RemoveOptions{Force: true})
+			}
+
+			report := gui.DockerCommand.ExecuteBatch(plans, remove)
+			if report.HasIssues() {
+				return gui.createErrorPanel(gui.Tr.BatchIssuesTitle + "\n\n" + renderBatchReport(report))
+			}
 			return nil
 		})
 	}, nil)

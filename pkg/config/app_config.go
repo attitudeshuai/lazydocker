@@ -64,6 +64,61 @@ type UserConfig struct {
 	// will be filtered out and not displayed.
 	// Not documented because it's subject to change
 	Ignore []string `yaml:"ignore,omitempty"`
+
+	// DeletePolicy determines what happens — before a request is sent to the
+	// docker daemon — when an object is referenced by others. When left unset
+	// deletion behaves exactly as it did before: the request is sent and the
+	// daemon's own rules decide.
+	DeletePolicy DeletePolicyConfig `yaml:"deletePolicy,omitempty"`
+}
+
+// Delete policy action names.
+const (
+	// DeleteActionReject refuses the deletion and lists the referrers.
+	DeleteActionReject = "reject"
+	// DeleteActionWarn records a warning (and the referrers) but continues
+	// after confirmation.
+	DeleteActionWarn = "warn"
+	// DeleteActionCascade removes the referencing objects layer by layer and
+	// then the target.
+	DeleteActionCascade = "cascade"
+)
+
+// DeletePolicyConfig configures pre-deletion reference checks. Policies can be
+// scoped along two independent dimensions — object type and project — and
+// combined via explicit rules.
+type DeletePolicyConfig struct {
+	// Default is the action used when no type or project specific rule matches.
+	// Empty (the default) means no pre-deletion check at all: deletion
+	// behaves exactly as it did without configuration.
+	Default string `yaml:"default,omitempty"`
+
+	// ByType sets the policy per object type ("containers", "images",
+	// "volumes", "networks", "services"), independent of project.
+	ByType map[string]string `yaml:"byType,omitempty"`
+
+	// ByProject sets the policy per compose project name, independent of
+	// object type. When both ByProject and ByType match, the project policy
+	// wins.
+	ByProject map[string]string `yaml:"byProject,omitempty"`
+
+	// Rules are explicit object-type x project combinations. A rule with a
+	// non-empty objectType AND project is most specific and wins over the
+	// dimension maps; a rule setting only one of them matches that dimension.
+	Rules []DeletePolicyRule `yaml:"rules,omitempty"`
+}
+
+// DeletePolicyRule binds an action to an optional object type and an optional
+// project. An empty field matches every value.
+type DeletePolicyRule struct {
+	// ObjectType is one of "container", "image", "volume", "network",
+	// "service"; empty matches all types.
+	ObjectType string `yaml:"objectType,omitempty"`
+	// Project is a compose project name; empty matches all projects (including
+	// standalone containers).
+	Project string `yaml:"project,omitempty"`
+	// Action is one of "reject", "warn", "cascade".
+	Action string `yaml:"action"`
 }
 
 // ThemeConfig is for setting the colors of panels and some text.
